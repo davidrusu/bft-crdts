@@ -9,16 +9,16 @@ type Crdt = orswot::Orswot<Data, Actor>;
 type Op = orswot::Op<Data, Actor>;
 
 #[derive(Debug)]
-struct Elder {
+struct Replica {
     id: Actor,
     state: Crdt,
-    // logs: HashMap<Actor, Vec<Op>>  TODO: store ops in elders to test for  op based replication.
+    // logs: HashMap<Actor, Vec<Op>>  TODO: store ops in replicas to test for  op based replication.
 }
 
-impl Elder {
-    fn new(elder_id: Actor) -> Self {
-        Elder {
-            id: elder_id,
+impl Replica {
+    fn new(replica_id: Actor) -> Self {
+        Replica {
+            id: replica_id,
             state: Crdt::new(),
             // logs: HashMap::new()
         }
@@ -36,42 +36,42 @@ impl Elder {
 #[derive(Debug)]
 struct Network {
     mythical_global_state: Crdt,
-    elders: HashMap<Actor, Elder>,
+    replicas: HashMap<Actor, Replica>,
 }
 
 #[derive(Debug, Clone)]
 enum NetworkEvent {
     Nop,
-    AddElder(Actor),
+    AddReplica(Actor),
     SendStateOp(Actor, Op),
-    // DisableElder(Actor),
-    // EnableElder(Actor),
+    // DisableReplica(Actor),
+    // EnableReplica(Actor),
 }
 
 impl Network {
     fn new() -> Self {
         Network {
             mythical_global_state: Crdt::new(), 
-            elders: HashMap::new()
+            replicas: HashMap::new()
         }
     }
 
     fn step(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Nop => (),
-            NetworkEvent::AddElder(elder_id) => {
-                if self.elders.contains_key(&elder_id) {
-                    // TODO: what is the expected behaviour if an elder trys to join with the same
-                    //       elder id as an existing one.
+            NetworkEvent::AddReplica(replica_id) => {
+                if self.replicas.contains_key(&replica_id) {
+                    // TODO: what is the expected behaviour if a replica trys to join with the same
+                    //       replica id as an existing one.
                     //       for now we drop the op.
                 } else {
-                    self.elders.insert(elder_id, Elder::new(elder_id));
+                    self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
             },
-            NetworkEvent::SendStateOp(elder_id, op) => {
-                if let Some(elder) = self.elders.get_mut(&elder_id) {
+            NetworkEvent::SendStateOp(replica_id, op) => {
+                if let Some(replica) = self.replicas.get_mut(&replica_id) {
                     self.mythical_global_state.apply(op.clone());
-                    elder.recv_op(op);
+                    replica.recv_op(op);
                 } else {
                     // drop the op
                 }
@@ -79,25 +79,25 @@ impl Network {
         }
     }
 
-    fn sync_elders(&mut self) {
+    fn sync_replicas(&mut self) {
         // TAI: should we instead be syncing Op's instead of State's?
         // There's a chance that would generate different byzantine faults under
         // the different replication modes.. maybe add tests for both
 
-        let elder_states: Vec<Crdt> = self.elders
+        let replica_states: Vec<Crdt> = self.replicas
             .values()
             .map(|e| e.state.clone())
             .collect();
 
-        self.elders.iter_mut().for_each(|(_, elder)| {
-            for other_state in elder_states.iter().cloned() {
-                elder.recv_state(other_state);
+        self.replicas.iter_mut().for_each(|(_, replica)| {
+            for other_state in replica_states.iter().cloned() {
+                replica.recv_state(other_state);
             }
         });
     }
 
-    fn check_elders_converge_to_global_state(&self) -> bool {
-        let elder_global_state = self.elders
+    fn check_replicas_converge_to_global_state(&self) -> bool {
+        let replica_global_state = self.replicas
             .iter()
             .map(|(_, e)| e.state.clone())
             .fold(Crdt::new(), |mut accum, crdt| {
@@ -105,13 +105,13 @@ impl Network {
                 accum
             });
 
-        elder_global_state == self.mythical_global_state
+        replica_global_state == self.mythical_global_state
     }
 
-    fn check_all_elders_have_same_state(&self) -> bool {
-        match self.elders.values().next() {
-            Some(some_elder) =>
-                self.elders.values().all(|e| e.state == some_elder.state),
+    fn check_all_replicas_have_same_state(&self) -> bool {
+        match self.replicas.values().next() {
+            Some(some_replica) =>
+                self.replicas.values().all(|e| e.state == some_replica.state),
             None => true
         }
     }
@@ -155,7 +155,7 @@ mod tests {
 
             match u8::arbitrary(g) % 4 {
                 0 => NetworkEvent::Nop,
-                1 => NetworkEvent::AddElder(Actor::arbitrary(g)),
+                1 => NetworkEvent::AddReplica(Actor::arbitrary(g)),
                 // TODO: It would be really nice to generate op's polymorphically over the chosen
                 //       CRDT type, right now we only hard code fuzzing for Orswot ops.
                 2 => NetworkEvent::SendStateOp(Actor::arbitrary(g), Op::Add { member, dot }),
@@ -166,25 +166,25 @@ mod tests {
     }
     
     quickcheck! {
-        fn elders_converge_to_global_state(network_events: Vec<NetworkEvent>) -> bool {
+        fn replicas_converge_to_global_state(network_events: Vec<NetworkEvent>) -> bool {
             let mut net = Network::new();
 
             for event in network_events {
                 net.step(event);
             }
 
-            net.check_elders_converge_to_global_state()
+            net.check_replicas_converge_to_global_state()
         }
 
-        fn elders_have_same_state_after_syncing(network_events: Vec<NetworkEvent>) -> bool {
+        fn replicas_have_same_state_after_syncing(network_events: Vec<NetworkEvent>) -> bool {
             let mut net = Network::new();
 
             for event in network_events {
                 net.step(event);
             }
 
-            net.sync_elders();
-            net.check_all_elders_have_same_state()
+            net.sync_replicas();
+            net.check_all_replicas_have_same_state()
         }
     }
 }
