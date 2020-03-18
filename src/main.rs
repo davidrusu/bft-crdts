@@ -8,11 +8,18 @@ type Data = u8;
 type Crdt = orswot::Orswot<Data, Actor>;
 type Op = orswot::Op<Data, Actor>;
 
+#[derive(Debug, Clone)]
+struct WrappedOp {
+    op: Op,
+    source: Actor,
+    dest: Actor,
+}
+
 #[derive(Debug)]
 struct Replica {
     id: Actor,
     state: Crdt,
-    // logs: HashMap<Actor, Vec<Op>>  TODO: store ops in replicas to test for  op based replication.
+    logs: HashMap<Actor, Vec<WrappedOp>> // the history of edits made by each actor
 }
 
 impl Replica {
@@ -20,12 +27,19 @@ impl Replica {
         Replica {
             id: replica_id,
             state: Crdt::new(),
-            // logs: HashMap::new()
+            logs: HashMap::new()
         }
     }
 
-    fn recv_op(&mut self, op: Op) {
-        self.state.apply(op);
+    fn recv_op(&mut self, wrapped_op: WrappedOp) {
+        assert_eq!(wrapped_op.dest, self.id);
+
+        let op_history = self.logs
+            .entry(wrapped_op.source)
+            .or_default();
+
+        op_history.push(wrapped_op.clone());
+        self.state.apply(wrapped_op.op);
     }
 
     fn recv_state(&mut self, state: Crdt) {
@@ -43,7 +57,7 @@ struct Network {
 enum NetworkEvent {
     Nop,
     AddReplica(Actor),
-    SendStateOp(Actor, Op),
+    SendOp(WrappedOp),
     // DisableReplica(Actor),
     // EnableReplica(Actor),
 }
@@ -68,10 +82,10 @@ impl Network {
                     self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
             },
-            NetworkEvent::SendStateOp(replica_id, op) => {
-                if let Some(replica) = self.replicas.get_mut(&replica_id) {
-                    self.mythical_global_state.apply(op.clone());
-                    replica.recv_op(op);
+            NetworkEvent::SendOp(wrapped_op) => {
+                if let Some(replica) = self.replicas.get_mut(&wrapped_op.dest) {
+                    self.mythical_global_state.apply(wrapped_op.op.clone());
+                    replica.recv_op(wrapped_op);
                 } else {
                     // drop the op
                 }
@@ -79,14 +93,25 @@ impl Network {
         }
     }
 
-    fn sync_replicas(&mut self) {
-        // TAI: should we instead be syncing Op's instead of State's?
-        // There's a chance that would generate different byzantine faults under
-        // the different replication modes.. maybe add tests for both
+    fn sync_replicas_via_op_replication(&mut self) {
+        let replica_op_logs: Vec<Vec<WrappedOp>> = self.replicas
+            .values()
+            .flat_map(|r| r.logs.values().cloned().collect::<Vec<Vec<WrappedOp>>>())
+            .collect();
 
+        self.replicas.iter_mut().for_each(|(_, replica)| {
+            for op_log in replica_op_logs.iter().cloned() {
+                for wrapped_op in op_log {
+                    replica.recv_op(wrapped_op)
+                }
+            }
+        });
+    }
+
+    fn sync_replicas_via_state_replication(&mut self) {
         let replica_states: Vec<Crdt> = self.replicas
             .values()
-            .map(|e| e.state.clone())
+            .map(|r| r.state.clone())
             .collect();
 
         self.replicas.iter_mut().for_each(|(_, replica)| {
@@ -153,13 +178,23 @@ mod tests {
                 members.insert(Data::arbitrary(g));
             }
 
-            match u8::arbitrary(g) % 4 {
+            let source = Actor::arbitrary(g);
+            let dest = Actor::arbitrary(g);
+
+            // TODO: It would be really nice to generate op's polymorphically over the chosen
+            //       CRDT type, right now we only hard code fuzzing for Orswot ops.
+            let op = match u8::arbitrary(g) % 2 {
+                0 => Op::Add { member, dot },
+                1 => Op::Rm { members, clock },
+                _ => panic!("tried to generate invalid op")
+            };
+
+            let wrapped_op = WrappedOp { op, source, dest };
+
+            match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
                 1 => NetworkEvent::AddReplica(Actor::arbitrary(g)),
-                // TODO: It would be really nice to generate op's polymorphically over the chosen
-                //       CRDT type, right now we only hard code fuzzing for Orswot ops.
-                2 => NetworkEvent::SendStateOp(Actor::arbitrary(g), Op::Add { member, dot }),
-                3 => NetworkEvent::SendStateOp(Actor::arbitrary(g), Op::Rm { members, clock }),
+                2 => NetworkEvent::SendOp(wrapped_op),
                 _ => panic!("tried to generate invalid network event")
             }
         }
@@ -176,14 +211,25 @@ mod tests {
             net.check_replicas_converge_to_global_state()
         }
 
-        fn replicas_have_same_state_after_syncing(network_events: Vec<NetworkEvent>) -> bool {
+        fn replicas_converge_after_state_based_syncing(network_events: Vec<NetworkEvent>) -> bool {
             let mut net = Network::new();
 
             for event in network_events {
                 net.step(event);
             }
 
-            net.sync_replicas();
+            net.sync_replicas_via_state_replication();
+            net.check_all_replicas_have_same_state()
+        }
+
+        fn replicas_converge_after_op_based_syncing(network_events: Vec<NetworkEvent>) -> bool {
+            let mut net = Network::new();
+
+            for event in network_events {
+                net.step(event);
+            }
+
+            net.sync_replicas_via_op_replication();
             net.check_all_replicas_have_same_state()
         }
     }
