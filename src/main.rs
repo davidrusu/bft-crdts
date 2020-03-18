@@ -12,7 +12,6 @@ type Op = orswot::Op<Data, Actor>;
 struct WrappedOp {
     op: Op,
     source: Actor,
-    dest: Actor,
 }
 
 #[derive(Debug)]
@@ -32,8 +31,6 @@ impl Replica {
     }
 
     fn recv_op(&mut self, wrapped_op: WrappedOp) {
-        assert_eq!(wrapped_op.dest, self.id);
-
         let op_history = self.logs
             .entry(wrapped_op.source)
             .or_default();
@@ -57,7 +54,7 @@ struct Network {
 enum NetworkEvent {
     Nop,
     AddReplica(Actor),
-    SendOp(WrappedOp),
+    SendOp(Actor,WrappedOp),
     // DisableReplica(Actor),
     // EnableReplica(Actor),
 }
@@ -82,8 +79,8 @@ impl Network {
                     self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
             },
-            NetworkEvent::SendOp(wrapped_op) => {
-                if let Some(replica) = self.replicas.get_mut(&wrapped_op.dest) {
+            NetworkEvent::SendOp(dest, wrapped_op) => {
+                if let Some(replica) = self.replicas.get_mut(&dest) {
                     self.mythical_global_state.apply(wrapped_op.op.clone());
                     replica.recv_op(wrapped_op);
                 } else {
@@ -189,12 +186,12 @@ mod tests {
                 _ => panic!("tried to generate invalid op")
             };
 
-            let wrapped_op = WrappedOp { op, source, dest };
+            let wrapped_op = WrappedOp { op, source };
 
             match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
                 1 => NetworkEvent::AddReplica(Actor::arbitrary(g)),
-                2 => NetworkEvent::SendOp(wrapped_op),
+                2 => NetworkEvent::SendOp(dest, wrapped_op),
                 _ => panic!("tried to generate invalid network event")
             }
         }
@@ -232,5 +229,41 @@ mod tests {
             net.sync_replicas_via_op_replication();
             net.check_all_replicas_have_same_state()
         }
+    }
+
+    #[test]
+    fn test_new_replicas_are_onboarded_correctly_on_op_sync() {
+        let mut net = Network::new();
+
+        let network_events = vec![
+            NetworkEvent::AddReplica(7),
+            NetworkEvent::SendOp(7, WrappedOp { op: Op::Add { dot: Dot { actor: 64, counter: 33 }, member: 20 }, source: 10}),
+            NetworkEvent::AddReplica(59)
+        ];
+
+        for event in network_events {
+            net.step(event);
+        }
+
+        net.sync_replicas_via_op_replication();
+        assert!(net.check_all_replicas_have_same_state());
+    }
+
+    #[test]
+    fn test_new_replicas_are_onboarded_correctly_on_state_sync() {
+        let mut net = Network::new();
+
+        let network_events = vec![
+            NetworkEvent::AddReplica(7),
+            NetworkEvent::SendOp(7, WrappedOp { op: Op::Add { dot: Dot { actor: 64, counter: 33 }, member: 20 }, source: 10}),
+            NetworkEvent::AddReplica(59)
+        ];
+
+        for event in network_events {
+            net.step(event);
+        }
+
+        net.sync_replicas_via_state_replication();
+        assert!(net.check_all_replicas_have_same_state());
     }
 }
