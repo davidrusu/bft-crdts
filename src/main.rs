@@ -229,6 +229,66 @@ mod tests {
             net.sync_replicas_via_op_replication();
             net.check_all_replicas_have_same_state()
         }
+
+        fn replicas_are_resistant_to_network_event_reordering(network_events: Vec<NetworkEvent>, reorderings: Vec<(u32, u32)>) -> bool {
+            // the newtork is commutative over network event
+            let mut net_in_order = Network::new();
+            let mut net_reordered = Network::new();
+
+            let num_events = network_events.len() as u32;
+
+            // TODO: replace this branch with quickcheck::TestResult::discard()
+            if num_events == 0 {
+                return true;
+            }
+
+            let mut reordered_network_events = network_events.clone();
+            for (a, b) in reorderings {
+                reordered_network_events.swap((a % num_events)  as usize, (b % num_events) as usize);
+            }
+
+            for event in network_events {
+                net_in_order.step(event);
+            }
+
+            for event in reordered_network_events {
+                net_reordered.step(event);
+            }
+
+            net_in_order.sync_replicas_via_op_replication();
+            if !net_in_order.check_all_replicas_have_same_state() {
+                return false
+            }
+
+            net_reordered.sync_replicas_via_op_replication();
+            if !net_reordered.check_all_replicas_have_same_state() {
+                return false
+            }
+
+            let any_in_order_state: Option<Crdt> = net_in_order.replicas.values().next().map(|r| r.state.clone());
+            let any_reordered_state: Option<Crdt> = net_reordered.replicas.values().next().map(|r| r.state.clone());
+
+            any_in_order_state == any_reordered_state
+        }
+    }
+
+    #[test]
+    fn test_resistance_to_reordering_replica_ops() {
+        let mut net = Network::new();
+
+        let network_events = vec![
+            NetworkEvent::AddReplica(2),
+            NetworkEvent::SendOp(2, WrappedOp { op: Op::Add { dot: Dot { actor: 32, counter: 2 }, member: 88 }, source: 32 }),
+            NetworkEvent::AddReplica(3),
+            NetworkEvent::SendOp(3, WrappedOp { op: Op::Add { dot: Dot { actor: 32, counter: 1 }, member: 57 }, source: 32 })
+        ];
+
+        for event in network_events {
+            net.step(event);
+        }
+
+        net.sync_replicas_via_op_replication();
+        assert!(net.check_all_replicas_have_same_state());
     }
 
     #[test]
@@ -267,3 +327,5 @@ mod tests {
         assert!(net.check_all_replicas_have_same_state());
     }
 }
+
+// TODO: add test for to verify that op based and state based replication both converge to the same state.
