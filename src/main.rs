@@ -1,4 +1,4 @@
-use crdts::{CvRDT, CmRDT, orswot};
+use crdts::{orswot, CmRDT, CvRDT};
 use std::collections::HashMap;
 
 // we use low cardinality types to improve the chances of interesting
@@ -18,7 +18,7 @@ struct WrappedOp {
 struct Replica {
     id: Actor,
     state: Crdt,
-    logs: HashMap<Actor, Vec<WrappedOp>> // the history of edits made by each actor
+    logs: HashMap<Actor, Vec<WrappedOp>>, // the history of edits made by each actor
 }
 
 impl Replica {
@@ -26,14 +26,12 @@ impl Replica {
         Replica {
             id: replica_id,
             state: Crdt::new(),
-            logs: HashMap::new()
+            logs: HashMap::new(),
         }
     }
 
     fn recv_op(&mut self, wrapped_op: WrappedOp) {
-        let op_history = self.logs
-            .entry(wrapped_op.source)
-            .or_default();
+        let op_history = self.logs.entry(wrapped_op.source).or_default();
 
         op_history.push(wrapped_op.clone());
         self.state.apply(wrapped_op.op);
@@ -54,7 +52,7 @@ struct Network {
 enum NetworkEvent {
     Nop,
     AddReplica(Actor),
-    SendOp(Actor,WrappedOp),
+    SendOp(Actor, WrappedOp),
     // DisableReplica(Actor),
     // EnableReplica(Actor),
 }
@@ -62,8 +60,8 @@ enum NetworkEvent {
 impl Network {
     fn new() -> Self {
         Network {
-            mythical_global_state: Crdt::new(), 
-            replicas: HashMap::new()
+            mythical_global_state: Crdt::new(),
+            replicas: HashMap::new(),
         }
     }
 
@@ -78,7 +76,7 @@ impl Network {
                 } else {
                     self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
-            },
+            }
             NetworkEvent::SendOp(dest, wrapped_op) => {
                 if let Some(replica) = self.replicas.get_mut(&dest) {
                     self.mythical_global_state.apply(wrapped_op.op.clone());
@@ -91,7 +89,8 @@ impl Network {
     }
 
     fn sync_replicas_via_op_replication(&mut self) {
-        let replica_op_logs: Vec<Vec<WrappedOp>> = self.replicas
+        let replica_op_logs: Vec<Vec<WrappedOp>> = self
+            .replicas
             .values()
             .flat_map(|r| r.logs.values().cloned().collect::<Vec<Vec<WrappedOp>>>())
             .collect();
@@ -106,10 +105,7 @@ impl Network {
     }
 
     fn sync_replicas_via_state_replication(&mut self) {
-        let replica_states: Vec<Crdt> = self.replicas
-            .values()
-            .map(|r| r.state.clone())
-            .collect();
+        let replica_states: Vec<Crdt> = self.replicas.values().map(|r| r.state.clone()).collect();
 
         self.replicas.iter_mut().for_each(|(_, replica)| {
             for other_state in replica_states.iter().cloned() {
@@ -119,22 +115,24 @@ impl Network {
     }
 
     fn check_replicas_converge_to_global_state(&self) -> bool {
-        let replica_global_state = self.replicas
-            .iter()
-            .map(|(_, e)| e.state.clone())
-            .fold(Crdt::new(), |mut accum, crdt| {
+        let replica_global_state = self.replicas.iter().map(|(_, e)| e.state.clone()).fold(
+            Crdt::new(),
+            |mut accum, crdt| {
                 accum.merge(crdt);
                 accum
-            });
+            },
+        );
 
         replica_global_state == self.mythical_global_state
     }
 
     fn check_all_replicas_have_same_state(&self) -> bool {
         match self.replicas.values().next() {
-            Some(some_replica) =>
-                self.replicas.values().all(|e| e.state == some_replica.state),
-            None => true
+            Some(some_replica) => self
+                .replicas
+                .values()
+                .all(|e| e.state == some_replica.state),
+            None => true,
         }
     }
 }
@@ -146,10 +144,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::{Arbitrary, Gen, quickcheck};
     use crdts::vclock::{Dot, VClock};
-    use hashbrown::HashSet; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
-
+    use hashbrown::HashSet;
+    use quickcheck::{quickcheck, Arbitrary, Gen}; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
 
     impl Arbitrary for NetworkEvent {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
@@ -158,20 +155,22 @@ mod tests {
             // TODO: move this into an `impl Arbitrary for Dot`
             let dot = Dot {
                 actor: Actor::arbitrary(g),
-                counter: u64::arbitrary(g) % 100 // TODO: is this fair?
+                counter: u64::arbitrary(g) % 100, // TODO: is this fair?
             };
 
             // TODO: move this into an `impl Arbitrary for VClock`
             let mut clock = VClock::new();
-            for _ in 0..(u8::arbitrary(g) % 10) { // TODO: this % 10 is not nice
+            for _ in 0..(u8::arbitrary(g) % 10) {
+                // TODO: this % 10 is not nice
                 clock.apply(Dot {
                     actor: Actor::arbitrary(g),
-                    counter: u64::arbitrary(g) % 100  // TODO: is this fair?
+                    counter: u64::arbitrary(g) % 100, // TODO: is this fair?
                 });
             }
 
             let mut members = HashSet::new();
-            for _ in 0..(u8::arbitrary(g) % 10) { // TODO: this % 10 is not nice
+            for _ in 0..(u8::arbitrary(g) % 10) {
+                // TODO: this % 10 is not nice
                 members.insert(Data::arbitrary(g));
             }
 
@@ -183,7 +182,7 @@ mod tests {
             let op = match u8::arbitrary(g) % 2 {
                 0 => Op::Add { member, dot },
                 1 => Op::Rm { members, clock },
-                _ => panic!("tried to generate invalid op")
+                _ => panic!("tried to generate invalid op"),
             };
 
             let wrapped_op = WrappedOp { op, source };
@@ -192,11 +191,11 @@ mod tests {
                 0 => NetworkEvent::Nop,
                 1 => NetworkEvent::AddReplica(Actor::arbitrary(g)),
                 2 => NetworkEvent::SendOp(dest, wrapped_op),
-                _ => panic!("tried to generate invalid network event")
+                _ => panic!("tried to generate invalid network event"),
             }
         }
     }
-    
+
     quickcheck! {
         fn replicas_converge_to_global_state(network_events: Vec<NetworkEvent>) -> bool {
             let mut net = Network::new();
@@ -278,9 +277,33 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::AddReplica(2),
-            NetworkEvent::SendOp(2, WrappedOp { op: Op::Add { dot: Dot { actor: 32, counter: 2 }, member: 88 }, source: 32 }),
+            NetworkEvent::SendOp(
+                2,
+                WrappedOp {
+                    op: Op::Add {
+                        dot: Dot {
+                            actor: 32,
+                            counter: 2,
+                        },
+                        member: 88,
+                    },
+                    source: 32,
+                },
+            ),
             NetworkEvent::AddReplica(3),
-            NetworkEvent::SendOp(3, WrappedOp { op: Op::Add { dot: Dot { actor: 32, counter: 1 }, member: 57 }, source: 32 })
+            NetworkEvent::SendOp(
+                3,
+                WrappedOp {
+                    op: Op::Add {
+                        dot: Dot {
+                            actor: 32,
+                            counter: 1,
+                        },
+                        member: 57,
+                    },
+                    source: 32,
+                },
+            ),
         ];
 
         for event in network_events {
@@ -297,8 +320,20 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::AddReplica(7),
-            NetworkEvent::SendOp(7, WrappedOp { op: Op::Add { dot: Dot { actor: 64, counter: 33 }, member: 20 }, source: 10}),
-            NetworkEvent::AddReplica(59)
+            NetworkEvent::SendOp(
+                7,
+                WrappedOp {
+                    op: Op::Add {
+                        dot: Dot {
+                            actor: 64,
+                            counter: 33,
+                        },
+                        member: 20,
+                    },
+                    source: 10,
+                },
+            ),
+            NetworkEvent::AddReplica(59),
         ];
 
         for event in network_events {
@@ -315,8 +350,20 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::AddReplica(7),
-            NetworkEvent::SendOp(7, WrappedOp { op: Op::Add { dot: Dot { actor: 64, counter: 33 }, member: 20 }, source: 10}),
-            NetworkEvent::AddReplica(59)
+            NetworkEvent::SendOp(
+                7,
+                WrappedOp {
+                    op: Op::Add {
+                        dot: Dot {
+                            actor: 64,
+                            counter: 33,
+                        },
+                        member: 20,
+                    },
+                    source: 10,
+                },
+            ),
+            NetworkEvent::AddReplica(59),
         ];
 
         for event in network_events {
