@@ -47,11 +47,11 @@ impl CausalityEnforcer {
         !we_have_an_exception
     }
 
-    fn enforce(&mut self, op: WrappedOp) -> Vec<WrappedOp> {
+    fn enforce(&mut self, op: WrappedOp) -> BTreeSet<WrappedOp> {
         if self.knowledge > VClock::from(op.source_version.clone()) {
             // we've already seen this op, drop it
             assert!(self.verify_no_exception_for(&op));
-            vec![]
+            BTreeSet::new()
         } else if self.knowledge.get(&op.source_version.actor) + 1 == op.source_version.counter {
             // This is new information that directly follows from the current version
             assert!(self.verify_no_exception_for(&op));
@@ -65,6 +65,13 @@ impl CausalityEnforcer {
             let ops_that_are_now_safe_to_apply = replica_exceptions.iter().cloned().scan(
                 op.source_version.counter,
                 |previous_counter, exception_op| {
+                    // TODO: this should be rewritten as
+                    // ```
+                    // if previous_version.inc() == exception_op.source_version {...}
+                    // ```
+                    // This requires a `Dot::inc()` method in rust-crdt.
+                    //
+                    // reason: dropping to the level of counter's here is breaking the Dot abstraction
                     if *previous_counter + 1 == exception_op.source_version.counter {
                         Some(exception_op)
                     } else {
@@ -81,16 +88,17 @@ impl CausalityEnforcer {
                 replica_exceptions.remove(consumed_op);
             }
 
-            in_order_ops.into_iter().collect()
+            in_order_ops
         } else {
             // This is an Op we've received out of order, we need to create an exception for it
-            // so that once we fill in the missing op's, we can then apply this op
+            // so that once we've filled in the missing versions from the source replica, we can
+            // then apply this op.
             self.forward_exceptions
                 .entry(op.source_version.actor)
                 .or_default()
                 .insert(op);
 
-            vec![]
+            BTreeSet::new()
         }
     }
 }
@@ -479,9 +487,10 @@ mod tests {
             },
         };
 
-        assert_eq!(enforcer.enforce(op2.clone()), vec![]);
-        assert_eq!(enforcer.enforce(op1.clone()), vec![op1, op2])
+        assert_eq!(enforcer.enforce(op2.clone()), BTreeSet::new());
+        assert_eq!(
+            enforcer.enforce(op1.clone()).into_iter().collect(),
+            vec![op1, op2].into_iter().collect()
+        )
     }
 }
-
-// TODO: add test for to verify that op based and state based replication both converge to the same state.
