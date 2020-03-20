@@ -23,20 +23,20 @@ type Op = orswot::Op<Data, Actor>;
 /// 1. Replicas have a global version they increment for each Op.
 /// 2. Replicas will always increment by 1 for each op they make.
 /// 3. Replica versions start at 0, the first Op will have version 1.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct CausalityEnforcer {
-    knowledge: VClock<Actor>, // the current version of data accepted into the materialized state
-    forward_exceptions: HashMap<Actor, BTreeSet<WrappedOp>>, // Op's this replica has received out of order are stored buffered here
+    /// The most recent version of each actor that has been released to the replica
+    knowledge: VClock<Actor>,
+
+    /// If we receive an WrappedOp from a replica that skips a version, we can not apply
+    /// this WrappedOp to local state so, we buffer it here.
+    ///
+    /// The WrappedOp is ordered on the version counter of the replica that sent it.
+    /// We rely on the fact that BTreeSet is ordered to re-order WrappedOp's as we insert them.
+    forward_exceptions: HashMap<Actor, BTreeSet<WrappedOp>>,
 }
 
 impl CausalityEnforcer {
-    fn new() -> Self {
-        CausalityEnforcer {
-            knowledge: VClock::new(),
-            forward_exceptions: HashMap::new(),
-        }
-    }
-
     fn enforce(&mut self, op: WrappedOp) -> Vec<WrappedOp> {
         if self.knowledge > VClock::from(op.source_version.clone()) {
             // we've already seen this op, drop it
@@ -104,13 +104,14 @@ struct WrappedOp {
 
 impl PartialOrd for WrappedOp {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.source_version.actor != other.source_version.actor {
-            return None;
+        // TODO: the bulk of this logic should move to an `impl PartialOrd for Dot` in rust-crdt
+        if self.source_version.actor == other.source_version.actor {
+            self.source_version
+                .counter
+                .partial_cmp(&other.source_version.counter)
+        } else {
+            None
         }
-
-        self.source_version
-            .counter
-            .partial_cmp(&other.source_version.counter)
     }
 }
 
@@ -134,7 +135,7 @@ impl Replica {
             id: replica_id,
             state: Crdt::new(),
             logs: HashMap::new(),
-            causality_enforcer: CausalityEnforcer::new(),
+            causality_enforcer: CausalityEnforcer::default(),
         }
     }
 
@@ -176,7 +177,7 @@ impl Network {
     fn new() -> Self {
         Network {
             mythical_global_state: Crdt::new(),
-            causality_enforcer: CausalityEnforcer::new(),
+            causality_enforcer: CausalityEnforcer::default(),
             replicas: HashMap::new(),
         }
     }
@@ -509,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_causal_order_enforcer_reordering() {
-        let mut enforcer = CausalityEnforcer::new();
+        let mut enforcer = CausalityEnforcer::default();
         let op2 = WrappedOp {
             op: Op::Add {
                 dot: Dot {
