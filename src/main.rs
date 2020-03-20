@@ -150,10 +150,6 @@ impl Replica {
             self.state.apply(causally_ordered_wrapped_op.op);
         }
     }
-
-    fn recv_state(&mut self, state: Crdt) {
-        self.state.merge(state);
-    }
 }
 
 #[derive(Debug)]
@@ -219,16 +215,6 @@ impl Network {
                 for wrapped_op in op_log {
                     replica.recv_op(wrapped_op)
                 }
-            }
-        });
-    }
-
-    fn sync_replicas_via_state_replication(&mut self) {
-        let replica_states: Vec<Crdt> = self.replicas.values().map(|r| r.state.clone()).collect();
-
-        self.replicas.iter_mut().for_each(|(_, replica)| {
-            for other_state in replica_states.iter().cloned() {
-                replica.recv_state(other_state);
             }
         });
     }
@@ -326,17 +312,6 @@ mod tests {
             }
 
             net.check_replicas_converge_to_global_state()
-        }
-
-        fn replicas_converge_after_state_based_syncing(network_events: Vec<NetworkEvent>) -> bool {
-            let mut net = Network::new();
-
-            for event in network_events {
-                net.step(event);
-            }
-
-            net.sync_replicas_via_state_replication();
-            net.check_all_replicas_have_same_state()
         }
 
         fn replicas_converge_after_op_based_syncing(network_events: Vec<NetworkEvent>) -> bool {
@@ -471,39 +446,6 @@ mod tests {
         }
 
         net.sync_replicas_via_op_replication();
-        assert!(net.check_all_replicas_have_same_state());
-    }
-
-    #[test]
-    fn test_new_replicas_are_onboarded_correctly_on_state_sync() {
-        let mut net = Network::new();
-
-        let network_events = vec![
-            NetworkEvent::AddReplica(7),
-            NetworkEvent::SendOp(
-                7,
-                WrappedOp {
-                    op: Op::Add {
-                        dot: Dot {
-                            actor: 64,
-                            counter: 33,
-                        },
-                        member: 20,
-                    },
-                    source_version: Dot {
-                        actor: 10,
-                        counter: 33, // TODO: what if this counter does not match the dot's counter
-                    },
-                },
-            ),
-            NetworkEvent::AddReplica(59),
-        ];
-
-        for event in network_events {
-            net.step(event);
-        }
-
-        net.sync_replicas_via_state_replication();
         assert!(net.check_all_replicas_have_same_state());
     }
 
