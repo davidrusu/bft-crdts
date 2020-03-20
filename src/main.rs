@@ -1,5 +1,6 @@
-use crdts::{orswot, CmRDT, CvRDT};
-use std::collections::HashMap;
+use crdts::{orswot, vclock::Dot, vclock::VClock, CmRDT, CvRDT};
+use std::cmp::{Ordering, PartialOrd};
+use std::collections::{BTreeSet, HashMap}; // TODO: can we replace HashMap with BTreeMap
 
 // we use low cardinality types to improve the chances of interesting
 // things happening in our randomized testing
@@ -8,10 +9,115 @@ type Data = u8;
 type Crdt = orswot::Orswot<Data, Actor>;
 type Op = orswot::Op<Data, Actor>;
 
-#[derive(Debug, Clone)]
+/// Causal CRDT's such as ORSWOT and Map need causal ordering on
+/// Op delivery. To satisfy this constraint, we introduce the
+/// CausalityEnforcer as a fault tolerance layer to be used in each replica.
+///
+/// The basic mechanism is to buffer an Op if there is a gap in versions.
+///
+/// Implementation note: We adapt this idea from `Version Vector with Exceptions`
+/// also known as `Concise Vectors`, see this paper for details:
+/// https://dahliamalkhi.files.wordpress.com/2016/08/winfs-version-vectors-disc2005.pdf
+///
+/// Assumptions:
+/// 1. Replicas have a global version they increment for each Op.
+/// 2. Replicas will always increment by 1 for each op they make.
+/// 3. Replica versions start at 0, the first Op will have version 1.
+#[derive(Debug)]
+struct CausalityEnforcer {
+    knowledge: VClock<Actor>, // the current version of data accepted into the materialized state
+    forward_exceptions: HashMap<Actor, BTreeSet<WrappedOp>>, // Op's this replica has received out of order are stored buffered here
+}
+
+impl CausalityEnforcer {
+    fn new() -> Self {
+        CausalityEnforcer {
+            knowledge: VClock::new(),
+            forward_exceptions: HashMap::new(),
+        }
+    }
+
+    fn enforce(&mut self, op: WrappedOp) -> Vec<WrappedOp> {
+        if self.knowledge > VClock::from(op.source_version.clone()) {
+            // we've already seen this op, drop it
+
+            assert!(!self
+                .forward_exceptions
+                .entry(op.source_version.actor)
+                .or_default()
+                .contains(&op));
+
+            vec![]
+        } else if self.knowledge.get(&op.source_version.actor) + 1 == op.source_version.counter {
+            // This is new information that directly follows from the current version
+
+            assert!(!self
+                .forward_exceptions
+                .entry(op.source_version.actor)
+                .or_default()
+                .contains(&op));
+
+            self.knowledge.apply(op.source_version.clone());
+            let replica_exceptions = self
+                .forward_exceptions
+                .entry(op.source_version.actor)
+                .or_default();
+
+            let ops_that_are_now_safe_to_apply = replica_exceptions.iter().cloned().scan(
+                op.source_version.counter,
+                |previous_counter, exception_op| {
+                    if *previous_counter + 1 == exception_op.source_version.counter {
+                        Some(exception_op)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+            let mut in_order_ops = BTreeSet::new();
+            in_order_ops.insert(op);
+            in_order_ops.extend(ops_that_are_now_safe_to_apply);
+
+            for consumed_op in in_order_ops.iter() {
+                replica_exceptions.remove(consumed_op);
+            }
+
+            in_order_ops.into_iter().collect()
+        } else {
+            // This is an Op we've received out of order, we need to create an exception for it
+            // so that once we fill in the missing op's, we can then apply this op
+            self.forward_exceptions
+                .entry(op.source_version.actor)
+                .or_default()
+                .insert(op);
+
+            vec![]
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct WrappedOp {
     op: Op,
-    source: Actor,
+    source_version: Dot<Actor>,
+}
+
+impl PartialOrd for WrappedOp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.source_version.actor != other.source_version.actor {
+            return None;
+        }
+
+        self.source_version
+            .counter
+            .partial_cmp(&other.source_version.counter)
+    }
+}
+
+impl Ord for WrappedOp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(&other).unwrap()
+    }
 }
 
 #[derive(Debug)]
@@ -19,6 +125,7 @@ struct Replica {
     id: Actor,
     state: Crdt,
     logs: HashMap<Actor, Vec<WrappedOp>>, // the history of edits made by each actor
+    causality_enforcer: CausalityEnforcer,
 }
 
 impl Replica {
@@ -27,14 +134,21 @@ impl Replica {
             id: replica_id,
             state: Crdt::new(),
             logs: HashMap::new(),
+            causality_enforcer: CausalityEnforcer::new(),
         }
     }
 
     fn recv_op(&mut self, wrapped_op: WrappedOp) {
-        let op_history = self.logs.entry(wrapped_op.source).or_default();
+        for causally_ordered_wrapped_op in self.causality_enforcer.enforce(wrapped_op) {
+            // Store the op for replication
+            self.logs
+                .entry(causally_ordered_wrapped_op.source_version.actor)
+                .or_default()
+                .push(causally_ordered_wrapped_op.clone());
 
-        op_history.push(wrapped_op.clone());
-        self.state.apply(wrapped_op.op);
+            // apply the op to our local state
+            self.state.apply(causally_ordered_wrapped_op.op);
+        }
     }
 
     fn recv_state(&mut self, state: Crdt) {
@@ -45,6 +159,7 @@ impl Replica {
 #[derive(Debug)]
 struct Network {
     mythical_global_state: Crdt,
+    causality_enforcer: CausalityEnforcer,
     replicas: HashMap<Actor, Replica>,
 }
 
@@ -61,6 +176,7 @@ impl Network {
     fn new() -> Self {
         Network {
             mythical_global_state: Crdt::new(),
+            causality_enforcer: CausalityEnforcer::new(),
             replicas: HashMap::new(),
         }
     }
@@ -79,7 +195,10 @@ impl Network {
             }
             NetworkEvent::SendOp(dest, wrapped_op) => {
                 if let Some(replica) = self.replicas.get_mut(&dest) {
-                    self.mythical_global_state.apply(wrapped_op.op.clone());
+                    for ordered_op in self.causality_enforcer.enforce(wrapped_op.clone()) {
+                        self.mythical_global_state.apply(ordered_op.op);
+                    }
+
                     replica.recv_op(wrapped_op);
                 } else {
                     // drop the op
@@ -144,7 +263,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crdts::vclock::{Dot, VClock};
     use hashbrown::HashSet;
     use quickcheck::{quickcheck, Arbitrary, Gen}; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
 
@@ -174,9 +292,6 @@ mod tests {
                 members.insert(Data::arbitrary(g));
             }
 
-            let source = Actor::arbitrary(g);
-            let dest = Actor::arbitrary(g);
-
             // TODO: It would be really nice to generate op's polymorphically over the chosen
             //       CRDT type, right now we only hard code fuzzing for Orswot ops.
             let op = match u8::arbitrary(g) % 2 {
@@ -185,7 +300,13 @@ mod tests {
                 _ => panic!("tried to generate invalid op"),
             };
 
-            let wrapped_op = WrappedOp { op, source };
+            let source = Actor::arbitrary(g);
+            let dest = Actor::arbitrary(g);
+            let source_version = Dot {
+                actor: source,
+                counter: u64::arbitrary(g), // TODO: modulo something small to improve chances of things happening
+            };
+            let wrapped_op = WrappedOp { op, source_version };
 
             match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
@@ -287,7 +408,10 @@ mod tests {
                         },
                         member: 88,
                     },
-                    source: 32,
+                    source_version: Dot {
+                        actor: 32,
+                        counter: 2,
+                    },
                 },
             ),
             NetworkEvent::AddReplica(3),
@@ -301,7 +425,10 @@ mod tests {
                         },
                         member: 57,
                     },
-                    source: 32,
+                    source_version: Dot {
+                        actor: 32,
+                        counter: 1,
+                    },
                 },
             ),
         ];
@@ -330,7 +457,10 @@ mod tests {
                         },
                         member: 20,
                     },
-                    source: 10,
+                    source_version: Dot {
+                        actor: 10,
+                        counter: 33,
+                    },
                 },
             ),
             NetworkEvent::AddReplica(59),
@@ -360,7 +490,10 @@ mod tests {
                         },
                         member: 20,
                     },
-                    source: 10,
+                    source_version: Dot {
+                        actor: 10,
+                        counter: 33, // TODO: what if this counter does not match the dot's counter
+                    },
                 },
             ),
             NetworkEvent::AddReplica(59),
@@ -372,6 +505,40 @@ mod tests {
 
         net.sync_replicas_via_state_replication();
         assert!(net.check_all_replicas_have_same_state());
+    }
+
+    #[test]
+    fn test_causal_order_enforcer_reordering() {
+        let mut enforcer = CausalityEnforcer::new();
+        let op2 = WrappedOp {
+            op: Op::Add {
+                dot: Dot {
+                    actor: 43,
+                    counter: 87,
+                },
+                member: 69,
+            },
+            source_version: Dot {
+                actor: 4,
+                counter: 2,
+            },
+        };
+        let op1 = WrappedOp {
+            op: Op::Add {
+                dot: Dot {
+                    actor: 1,
+                    counter: 44,
+                },
+                member: 29,
+            },
+            source_version: Dot {
+                actor: 4,
+                counter: 1,
+            },
+        };
+
+        assert_eq!(enforcer.enforce(op2.clone()), vec![]);
+        assert_eq!(enforcer.enforce(op1.clone()), vec![op1, op2])
     }
 }
 
