@@ -37,25 +37,24 @@ struct CausalityEnforcer {
 }
 
 impl CausalityEnforcer {
+    fn verify_no_exception_for(&self, op: &WrappedOp) -> bool {
+        let we_have_an_exception = self
+            .forward_exceptions
+            .get(&op.source_version.actor)
+            .map(|exceptions| exceptions.contains(op))
+            .unwrap_or(false);
+
+        !we_have_an_exception
+    }
+
     fn enforce(&mut self, op: WrappedOp) -> Vec<WrappedOp> {
         if self.knowledge > VClock::from(op.source_version.clone()) {
             // we've already seen this op, drop it
-
-            assert!(!self
-                .forward_exceptions
-                .entry(op.source_version.actor)
-                .or_default()
-                .contains(&op));
-
+            assert!(self.verify_no_exception_for(&op));
             vec![]
         } else if self.knowledge.get(&op.source_version.actor) + 1 == op.source_version.counter {
             // This is new information that directly follows from the current version
-
-            assert!(!self
-                .forward_exceptions
-                .entry(op.source_version.actor)
-                .or_default()
-                .contains(&op));
+            assert!(self.verify_no_exception_for(&op));
 
             self.knowledge.apply(op.source_version.clone());
             let replica_exceptions = self
