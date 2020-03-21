@@ -489,7 +489,7 @@ mod tests {
 
         assert_eq!(enforcer.enforce(op2.clone()), BTreeSet::new());
         assert_eq!(
-            enforcer.enforce(op1.clone()).into_iter().collect(),
+            enforcer.enforce(op1.clone()),
             vec![op1, op2].into_iter().collect()
         )
     }
