@@ -170,10 +170,10 @@ struct Network {
 #[derive(Debug, Clone)]
 enum NetworkEvent {
     Nop,
-    AddReplica(Actor),
-    SendOp(Actor, WrappedOp),
-    // DisableReplica(Actor),
-    // EnableReplica(Actor),
+    ReplicaAdded(Actor),
+    OpSent(Actor, WrappedOp),
+    // ReplicaDisabled(Actor),
+    // ReplicaEnabled(Actor),
 }
 
 impl Network {
@@ -188,7 +188,7 @@ impl Network {
     fn step(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Nop => (),
-            NetworkEvent::AddReplica(replica_id) => {
+            NetworkEvent::ReplicaAdded(replica_id) => {
                 if self.replicas.contains_key(&replica_id) {
                     // TODO: what is the expected behaviour if a replica trys to join with the same
                     //       replica id as an existing one.
@@ -197,7 +197,7 @@ impl Network {
                     self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
             }
-            NetworkEvent::SendOp(dest, wrapped_op) => {
+            NetworkEvent::OpSent(dest, wrapped_op) => {
                 if let Some(replica) = self.replicas.get_mut(&dest) {
                     for ordered_op in self.causality_enforcer.enforce(wrapped_op.clone()) {
                         self.mythical_global_state.apply(ordered_op.op);
@@ -304,8 +304,8 @@ mod tests {
 
             match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
-                1 => NetworkEvent::AddReplica(Actor::arbitrary(g)),
-                2 => NetworkEvent::SendOp(dest, wrapped_op),
+                1 => NetworkEvent::ReplicaAdded(Actor::arbitrary(g)),
+                2 => NetworkEvent::OpSent(dest, wrapped_op),
                 _ => panic!("tried to generate invalid network event"),
             }
         }
@@ -380,8 +380,8 @@ mod tests {
         let mut net = Network::new();
 
         let network_events = vec![
-            NetworkEvent::AddReplica(2),
-            NetworkEvent::SendOp(
+            NetworkEvent::ReplicaAdded(2),
+            NetworkEvent::OpSent(
                 2,
                 WrappedOp {
                     op: Op::Add {
@@ -397,8 +397,8 @@ mod tests {
                     },
                 },
             ),
-            NetworkEvent::AddReplica(3),
-            NetworkEvent::SendOp(
+            NetworkEvent::ReplicaAdded(3),
+            NetworkEvent::OpSent(
                 3,
                 WrappedOp {
                     op: Op::Add {
@@ -429,8 +429,8 @@ mod tests {
         let mut net = Network::new();
 
         let network_events = vec![
-            NetworkEvent::AddReplica(7),
-            NetworkEvent::SendOp(
+            NetworkEvent::ReplicaAdded(7),
+            NetworkEvent::OpSent(
                 7,
                 WrappedOp {
                     op: Op::Add {
@@ -446,7 +446,7 @@ mod tests {
                     },
                 },
             ),
-            NetworkEvent::AddReplica(59),
+            NetworkEvent::ReplicaAdded(59),
         ];
 
         for event in network_events {
