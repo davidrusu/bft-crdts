@@ -2,6 +2,8 @@ use crdts::{orswot, vclock::Dot, vclock::VClock, CmRDT, CvRDT};
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeSet, HashMap}; // TODO: can we replace HashMap with BTreeMap
 
+mod at2;
+
 // we use low cardinality types to improve the chances of interesting
 // things happening in our randomized testing
 type Actor = u8;
@@ -37,16 +39,6 @@ struct CausalityEnforcer {
 }
 
 impl CausalityEnforcer {
-    fn verify_no_exception_for(&self, op: &WrappedOp) -> bool {
-        let we_have_an_exception = self
-            .forward_exceptions
-            .get(&op.source_version.actor)
-            .map(|exceptions| exceptions.contains(op))
-            .unwrap_or(false);
-
-        !we_have_an_exception
-    }
-
     fn enforce(&mut self, op: WrappedOp) -> BTreeSet<WrappedOp> {
         if self.knowledge > VClock::from(op.source_version.clone()) {
             // we've already seen this op, drop it
@@ -100,6 +92,16 @@ impl CausalityEnforcer {
 
             BTreeSet::new()
         }
+    }
+
+    fn verify_no_exception_for(&self, op: &WrappedOp) -> bool {
+        let we_have_an_exception = self
+            .forward_exceptions
+            .get(&op.source_version.actor)
+            .map(|exceptions| exceptions.contains(op))
+            .unwrap_or(false);
+
+        !we_have_an_exception
     }
 }
 
@@ -171,7 +173,8 @@ struct Network {
 enum NetworkEvent {
     Nop,
     ReplicaAdded(Actor),
-    OpSent(Actor, WrappedOp),
+    TrueOpSent(Actor, WrappedOp), // TrueOps are sourced by the source replica referenced in the WrappedOp
+    // FalseOpSent(Actor, WrappedOp), // FalseOps are Op's that did not originate from the source referenced in WrappedOp
     // ReplicaDisabled(Actor),
     // ReplicaEnabled(Actor),
 }
@@ -197,7 +200,7 @@ impl Network {
                     self.replicas.insert(replica_id, Replica::new(replica_id));
                 }
             }
-            NetworkEvent::OpSent(dest, wrapped_op) => {
+            NetworkEvent::TrueOpSent(dest, wrapped_op) => {
                 if let Some(replica) = self.replicas.get_mut(&dest) {
                     for ordered_op in self.causality_enforcer.enforce(wrapped_op.clone()) {
                         self.mythical_global_state.apply(ordered_op.op);
@@ -305,7 +308,7 @@ mod tests {
             match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
                 1 => NetworkEvent::ReplicaAdded(Actor::arbitrary(g)),
-                2 => NetworkEvent::OpSent(dest, wrapped_op),
+                2 => NetworkEvent::TrueOpSent(dest, wrapped_op),
                 _ => panic!("tried to generate invalid network event"),
             }
         }
@@ -381,7 +384,7 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::ReplicaAdded(2),
-            NetworkEvent::OpSent(
+            NetworkEvent::TrueOpSent(
                 2,
                 WrappedOp {
                     op: Op::Add {
@@ -398,7 +401,7 @@ mod tests {
                 },
             ),
             NetworkEvent::ReplicaAdded(3),
-            NetworkEvent::OpSent(
+            NetworkEvent::TrueOpSent(
                 3,
                 WrappedOp {
                     op: Op::Add {
@@ -430,7 +433,7 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::ReplicaAdded(7),
-            NetworkEvent::OpSent(
+            NetworkEvent::TrueOpSent(
                 7,
                 WrappedOp {
                     op: Op::Add {
