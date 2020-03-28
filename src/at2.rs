@@ -170,7 +170,7 @@ impl Proc {
     }
 
     fn handle_msg(&mut self, from: ProcID, msg: Msg) -> Vec<Cmd> {
-        self.on_delivery(from, msg.clone());
+        self.on_delivery(from, msg);
         self.process_msg_queue();
 
         vec![]
@@ -251,7 +251,7 @@ impl Net {
     fn handle_join_request(&mut self, to: ProcID, new_proc: ProcID, initial_balance: Money) -> Vec<Cmd> {
         let to_proc = self.procs
             .get_mut(&to)
-            .expect(&format!("[ERROR] invalid source proc"));
+            .expect("[ERROR] invalid source proc");
 
         to_proc.handle_join_request(new_proc, initial_balance)
     }
@@ -269,7 +269,7 @@ impl Net {
         let from_proc = self.procs.get_mut(&from).expect("[ERROR] missing from proc");
         causal_nexts.extend(from_proc.handle_msg(from, msg)); 
 
-        return causal_nexts;
+        causal_nexts
     }
 }
 
