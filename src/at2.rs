@@ -1,3 +1,5 @@
+// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
+
 // TODO: remove unused derives
 use std::collections::{BTreeSet, HashMap}; // TODO: can we replace HashMap with BTreeMap
 use std::mem;
