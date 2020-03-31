@@ -173,7 +173,8 @@ struct Network {
 enum NetworkEvent {
     Nop,
     ReplicaAdded(Actor),
-    TrueOpSent(Actor, WrappedOp), // TrueOps are sourced by the source replica referenced in the WrappedOp
+    /// TrueOps are sourced by the source replica referenced in the WrappedOp
+    TrueOpSent(Actor, WrappedOp),
     // FalseOpSent(Actor, WrappedOp), // FalseOps are Op's that did not originate from the source referenced in WrappedOp
     // ReplicaDisabled(Actor),
     // ReplicaEnabled(Actor),
