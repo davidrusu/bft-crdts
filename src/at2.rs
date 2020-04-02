@@ -223,7 +223,7 @@ impl Proc {
             vec![Cmd::JoinRequest {
                 to: new_proc,
                 proc_to_join: self.id,
-                self.initial_balance_for_proc(self.id),
+                initial_balance: self.initial_balance_for_proc(self.id),
             }]
         } else {
             vec![]
@@ -343,7 +343,7 @@ impl Net {
             .expect(&format!("[ERROR] No proc with ProcID {}", from))
             .handle_msg(from, msg);
 
-        causal_nexts.extend(next_cmds_triggere_by_msg);
+        causal_nexts.extend(next_cmds_triggered_by_msg);
 
         causal_nexts
     }
