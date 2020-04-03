@@ -1,8 +1,11 @@
 // IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
 
 // TODO: remove unused derives
-use std::collections::{BTreeSet, HashMap}; // TODO: can we replace HashMap with BTreeMap
+use std::collections::{HashMap, HashSet};
 use std::mem;
+
+use crdts::vclock::{Dot, VClock};
+use crdts::CmRDT;
 
 type ProcID = u8;
 type Money = i64;
@@ -11,26 +14,30 @@ type Money = i64;
 struct Proc {
     id: ProcID,
     initial_balances: HashMap<ProcID, Money>,
-    seq: HashMap<ProcID, u64>, // Number of validated transfers outgoing from q
-    rec: HashMap<ProcID, u64>, // Number of delivered transfers from q
-    hist: HashMap<ProcID, BTreeSet<Transfer>>, // Set of validated transfers involving q
-    deps: BTreeSet<Transfer>,  // Set of last incoming transfers for account of local process p
-    to_validate: BTreeSet<(ProcID, Msg)>, // Set of delivered (but not validated) transfers
-    peers: BTreeSet<ProcID>,
+    // Applied knowledged by ProcID
+    seq: VClock<ProcID>,
+    // Delivered but not neccessarily applied knowledge by ProcID
+    rec: VClock<ProcID>,
+    // Set of validated transfers involving q
+    hist: HashMap<ProcID, HashSet<Transfer>>,
+    // Set of last incoming transfers for account of local process p
+    deps: HashSet<Transfer>,
+    // Set of delivered (but not validated) transfers
+    to_validate: Vec<(ProcID, Msg)>,
+    peers: HashSet<ProcID>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Transfer {
-    from: ProcID,
+    source_version: Dot<ProcID>,
     to: ProcID,
     amount: Money,
-    seq_num: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Msg {
     transfer: Transfer,
-    history: BTreeSet<Transfer>,
+    history: HashSet<Transfer>,
 }
 
 impl Proc {
@@ -38,12 +45,12 @@ impl Proc {
         Proc {
             id,
             initial_balances: vec![(id, initial_balance)].into_iter().collect(),
-            seq: HashMap::new(),
-            rec: HashMap::new(),
+            seq: VClock::new(),
+            rec: VClock::new(),
             hist: HashMap::new(),
-            deps: BTreeSet::new(),
-            to_validate: BTreeSet::new(),
-            peers: BTreeSet::new(),
+            deps: HashSet::new(),
+            to_validate: Vec::new(),
+            peers: HashSet::new(),
         }
     }
 
@@ -72,10 +79,9 @@ impl Proc {
                 from: self.id,
                 msg: Msg {
                     transfer: Transfer {
-                        from,
+                        source_version: self.seq.inc(from),
                         to,
                         amount,
-                        seq_num: self.seq_for_proc(from) + 1,
                     },
                     history: self.deps.clone(),
                 },
@@ -96,22 +102,20 @@ impl Proc {
 
     /// Executed when we successfully deliver messages to process p
     fn on_delivery(&mut self, from: ProcID, msg: Msg) {
-        assert_eq!(from, msg.transfer.from);
+        assert_eq!(from, msg.transfer.source_version.actor);
 
         // Secure broadcast callback
-        if msg.transfer.seq_num == *self.rec.entry(msg.transfer.from).or_default() + 1 {
+        if msg.transfer.source_version == self.rec.inc(from) {
             println!(
                 "{} Accepted message from {} and enqueued for validation",
                 self.id, from
             );
-            let from_rec = self.rec.entry(from).or_default();
-            *from_rec += 1;
-
-            self.to_validate.insert((from, msg));
+            self.rec.apply(msg.transfer.source_version);
+            self.to_validate.push((from, msg));
         } else {
             println!(
-                "{} Rejected message from {}, transfer seq_num is invalid",
-                self.id, from
+                "{} Rejected message from {}, transfer source version is invalid: {:?}",
+                self.id, from, msg.transfer.source_version
             );
         }
     }
@@ -119,11 +123,11 @@ impl Proc {
     /// Executed when a transfer from `from` becomes valid.
     fn on_validated(&mut self, from: ProcID, msg: &Msg) {
         assert!(self.valid(from, &msg));
-        assert_eq!(self.seq_for_proc(from) + 1, msg.transfer.seq_num);
+        assert_eq!(msg.transfer.source_version, self.seq.inc(from));
 
         // Update the history for the outgoing account
         self.hist
-            .entry(msg.transfer.from)
+            .entry(msg.transfer.source_version.actor)
             .or_default()
             .insert(msg.transfer);
 
@@ -133,7 +137,7 @@ impl Proc {
             .or_default()
             .insert(msg.transfer);
 
-        self.seq.insert(from, msg.transfer.seq_num);
+        self.seq.apply(msg.transfer.source_version);
 
         if msg.transfer.to == self.id {
             // This transfer directly affects the account of this process.
@@ -141,7 +145,7 @@ impl Proc {
             self.deps.insert(msg.transfer);
         }
 
-        if msg.transfer.from == self.id {
+        if msg.transfer.source_version.actor == self.id {
             // This transfer is outgoing from account of local process (it was sent by this proc)
 
             // In the paper, they clear the deps after the broadcast completes
@@ -149,25 +153,19 @@ impl Proc {
             // the broadcast completes successfully from within the transfer function.
             // We move the clearing of the deps here since this is where we now know
             // the broadcast succeeded
-            self.deps = BTreeSet::new();
+            self.deps = HashSet::new();
         }
     }
 
     fn valid(&self, from: ProcID, msg: &Msg) -> bool {
-        let last_known_sender_seq = self.seq_for_proc(from);
-        let balance_of_sender = self.balance(msg.transfer.from, &self.hist_for_proc(from));
+        let balance_of_sender =
+            self.balance(msg.transfer.source_version.actor, &self.hist_for_proc(from));
         let sender_history = self.hist_for_proc(from);
 
-        if from != msg.transfer.from {
+        if msg.transfer.source_version != self.seq.inc(from) {
             println!(
-                "[INVALID] sending proc {} does not match msg from field: {}",
-                from, msg.transfer.from
-            );
-            false
-        } else if msg.transfer.seq_num != last_known_sender_seq + 1 {
-            println!(
-                "[INVALID] seq {} is not a direct successor of last transfer from {}: {}",
-                msg.transfer.seq_num, from, last_known_sender_seq
+                "[INVALID] Source version {:?} is not a direct successor of last transfer from {}: {:?}",
+                msg.transfer.source_version, from, self.seq.dot(from)
             );
             false
         } else if balance_of_sender < msg.transfer.amount {
@@ -187,11 +185,7 @@ impl Proc {
         }
     }
 
-    fn seq_for_proc(&self, p: ProcID) -> u64 {
-        self.seq.get(&p).cloned().unwrap_or_default()
-    }
-
-    fn hist_for_proc(&self, p: ProcID) -> BTreeSet<Transfer> {
+    fn hist_for_proc(&self, p: ProcID) -> HashSet<Transfer> {
         self.hist.get(&p).cloned().unwrap_or_default()
     }
 
@@ -202,8 +196,12 @@ impl Proc {
             .expect(&format!("[ERROR] No initial balance for proc {}", p))
     }
 
-    fn balance(&self, a: ProcID, h: &BTreeSet<Transfer>) -> Money {
-        let outgoing: Money = h.iter().filter(|t| t.from == a).map(|t| t.amount).sum();
+    fn balance(&self, a: ProcID, h: &HashSet<Transfer>) -> Money {
+        let outgoing: Money = h
+            .iter()
+            .filter(|t| t.source_version.actor == a)
+            .map(|t| t.amount)
+            .sum();
         let incoming: Money = h.iter().filter(|t| t.to == a).map(|t| t.amount).sum();
 
         let balance_delta = incoming - outgoing;
@@ -237,7 +235,7 @@ impl Proc {
     }
 
     fn process_msg_queue(&mut self) {
-        let to_validate = mem::replace(&mut self.to_validate, BTreeSet::new());
+        let to_validate = mem::replace(&mut self.to_validate, Vec::new());
         for (to, msg) in to_validate {
             if self.valid(to, &msg) {
                 self.on_validated(to, &msg);
@@ -395,12 +393,11 @@ mod tests {
             from: 32,
             msg: Msg {
                 transfer: Transfer {
-                    from: 32,
+                    source_version: Dot::new(32, 1),
                     to: 91,
                     amount: 1000,
-                    seq_num: 1,
                 },
-                history: BTreeSet::new(),
+                history: HashSet::new(),
             },
         }]);
 
@@ -412,12 +409,11 @@ mod tests {
             from: 32,
             msg: Msg {
                 transfer: Transfer {
-                    from: 32,
+                    source_version: Dot::new(32, 1),
                     to: 54,
                     amount: 1000,
-                    seq_num: 1,
                 },
-                history: BTreeSet::new(),
+                history: HashSet::new(),
             },
         }]);
 

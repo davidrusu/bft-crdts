@@ -1,6 +1,6 @@
 use crdts::{orswot, vclock::Dot, vclock::VClock, CmRDT, CvRDT};
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeSet, HashMap}; // TODO: can we replace HashMap with BTreeMap
+use std::collections::{BTreeSet, HashMap, HashSet}; // TODO: can we replace HashMap with BTreeMap
 
 mod at2;
 
@@ -261,13 +261,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hashbrown::HashSet;
     use quickcheck::{quickcheck, Arbitrary, Gen}; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
 
     impl Arbitrary for NetworkEvent {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
-            let member = Data::arbitrary(g);
-
             // TODO: move this into an `impl Arbitrary for Dot`
             let dot = Dot {
                 actor: Actor::arbitrary(g),
@@ -293,7 +290,7 @@ mod tests {
             // TODO: It would be really nice to generate op's polymorphically over the chosen
             //       CRDT type, right now we only hard code fuzzing for Orswot ops.
             let op = match u8::arbitrary(g) % 2 {
-                0 => Op::Add { member, dot },
+                0 => Op::Add { members, dot },
                 1 => Op::Rm { members, clock },
                 _ => panic!("tried to generate invalid op"),
             };
@@ -393,7 +390,7 @@ mod tests {
                             actor: 32,
                             counter: 2,
                         },
-                        member: 88,
+                        members: vec![88].into_iter().collect(),
                     },
                     source_version: Dot {
                         actor: 32,
@@ -410,7 +407,7 @@ mod tests {
                             actor: 32,
                             counter: 1,
                         },
-                        member: 57,
+                        members: vec![57].into_iter().collect(),
                     },
                     source_version: Dot {
                         actor: 32,
@@ -442,7 +439,7 @@ mod tests {
                             actor: 64,
                             counter: 33,
                         },
-                        member: 20,
+                        members: vec![20].into_iter().collect(),
                     },
                     source_version: Dot {
                         actor: 10,
@@ -470,7 +467,7 @@ mod tests {
                     actor: 43,
                     counter: 87,
                 },
-                member: 69,
+                members: vec![69].into_iter().collect(),
             },
             source_version: Dot {
                 actor: 4,
@@ -483,7 +480,7 @@ mod tests {
                     actor: 1,
                     counter: 44,
                 },
-                member: 29,
+                members: vec![29].into_iter().collect(),
             },
             source_version: Dot {
                 actor: 4,
