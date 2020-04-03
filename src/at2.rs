@@ -18,7 +18,7 @@ struct Proc {
     seq: VClock<ProcID>,
     // Delivered but not neccessarily applied knowledge by ProcID
     rec: VClock<ProcID>,
-    // Set of validated transfers involving q
+    // Set of validated transfers involving a given Proc
     hist: HashMap<ProcID, HashSet<Transfer>>,
     // Set of last incoming transfers for account of local process p
     deps: HashSet<Transfer>,
@@ -29,7 +29,7 @@ struct Proc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Transfer {
-    source_version: Dot<ProcID>,
+    from: ProcID,
     to: ProcID,
     amount: Money,
 }
@@ -37,6 +37,7 @@ struct Transfer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Msg {
     transfer: Transfer,
+    source_version: Dot<ProcID>,
     history: HashSet<Transfer>,
 }
 
@@ -78,11 +79,8 @@ impl Proc {
             vec![Cmd::BroadcastMsg {
                 from: self.id,
                 msg: Msg {
-                    transfer: Transfer {
-                        source_version: self.seq.inc(from),
-                        to,
-                        amount,
-                    },
+                    transfer: Transfer { from, to, amount },
+                    source_version: self.seq.inc(from),
                     history: self.deps.clone(),
                 },
             }]
@@ -100,22 +98,35 @@ impl Proc {
         )
     }
 
+    fn balance(&self, a: ProcID, h: &HashSet<Transfer>) -> Money {
+        let outgoing: Money = h.iter().filter(|t| t.from == a).map(|t| t.amount).sum();
+        let incoming: Money = h.iter().filter(|t| t.to == a).map(|t| t.amount).sum();
+
+        let balance_delta = incoming - outgoing;
+
+        let balance = self.initial_balance_for_proc(a) + balance_delta;
+
+        assert!(balance >= 0);
+
+        balance
+    }
+
     /// Executed when we successfully deliver messages to process p
     fn on_delivery(&mut self, from: ProcID, msg: Msg) {
-        assert_eq!(from, msg.transfer.source_version.actor);
+        assert_eq!(from, msg.source_version.actor);
 
         // Secure broadcast callback
-        if msg.transfer.source_version == self.rec.inc(from) {
+        if msg.source_version == self.rec.inc(from) {
             println!(
                 "{} Accepted message from {} and enqueued for validation",
                 self.id, from
             );
-            self.rec.apply(msg.transfer.source_version);
+            self.rec.apply(msg.source_version);
             self.to_validate.push((from, msg));
         } else {
             println!(
                 "{} Rejected message from {}, transfer source version is invalid: {:?}",
-                self.id, from, msg.transfer.source_version
+                self.id, from, msg.source_version
             );
         }
     }
@@ -123,11 +134,11 @@ impl Proc {
     /// Executed when a transfer from `from` becomes valid.
     fn on_validated(&mut self, from: ProcID, msg: &Msg) {
         assert!(self.valid(from, &msg));
-        assert_eq!(msg.transfer.source_version, self.seq.inc(from));
+        assert_eq!(msg.source_version, self.seq.inc(from));
 
         // Update the history for the outgoing account
         self.hist
-            .entry(msg.transfer.source_version.actor)
+            .entry(msg.source_version.actor)
             .or_default()
             .insert(msg.transfer);
 
@@ -137,7 +148,7 @@ impl Proc {
             .or_default()
             .insert(msg.transfer);
 
-        self.seq.apply(msg.transfer.source_version);
+        self.seq.apply(msg.source_version);
 
         if msg.transfer.to == self.id {
             // This transfer directly affects the account of this process.
@@ -145,7 +156,7 @@ impl Proc {
             self.deps.insert(msg.transfer);
         }
 
-        if msg.transfer.source_version.actor == self.id {
+        if msg.source_version.actor == self.id {
             // This transfer is outgoing from account of local process (it was sent by this proc)
 
             // In the paper, they clear the deps after the broadcast completes
@@ -153,19 +164,30 @@ impl Proc {
             // the broadcast completes successfully from within the transfer function.
             // We move the clearing of the deps here since this is where we now know
             // the broadcast succeeded
-            self.deps = HashSet::new();
+            self.deps.clear();
         }
     }
 
     fn valid(&self, from: ProcID, msg: &Msg) -> bool {
-        let balance_of_sender =
-            self.balance(msg.transfer.source_version.actor, &self.hist_for_proc(from));
+        let balance_of_sender = self.balance(msg.source_version.actor, &self.hist_for_proc(from));
         let sender_history = self.hist_for_proc(from);
 
-        if msg.transfer.source_version != self.seq.inc(from) {
+        if from != msg.source_version.actor {
+            println!(
+                "[INVALID] Transfer from {:?} does not match the msg source version {:?}",
+                from, msg.source_version
+            );
+            false
+        } else if msg.transfer.from != msg.source_version.actor {
+            println!(
+                "[INVALID] Transfer from {:?} does not have matching the msg source version and msg transfer from fields {:?} != {:?}",
+                from, msg.source_version, msg.transfer.from
+            );
+            false
+        } else if msg.source_version != self.seq.inc(from) {
             println!(
                 "[INVALID] Source version {:?} is not a direct successor of last transfer from {}: {:?}",
-                msg.transfer.source_version, from, self.seq.dot(from)
+                msg.source_version, from, self.seq.dot(from)
             );
             false
         } else if balance_of_sender < msg.transfer.amount {
@@ -194,23 +216,6 @@ impl Proc {
             .get(&p)
             .cloned()
             .expect(&format!("[ERROR] No initial balance for proc {}", p))
-    }
-
-    fn balance(&self, a: ProcID, h: &HashSet<Transfer>) -> Money {
-        let outgoing: Money = h
-            .iter()
-            .filter(|t| t.source_version.actor == a)
-            .map(|t| t.amount)
-            .sum();
-        let incoming: Money = h.iter().filter(|t| t.to == a).map(|t| t.amount).sum();
-
-        let balance_delta = incoming - outgoing;
-
-        let balance = self.initial_balance_for_proc(a) + balance_delta;
-
-        assert!(balance >= 0);
-
-        balance
     }
 
     fn handle_join_request(&mut self, new_proc: ProcID, initial_balance: Money) -> Vec<Cmd> {
@@ -393,10 +398,11 @@ mod tests {
             from: 32,
             msg: Msg {
                 transfer: Transfer {
-                    source_version: Dot::new(32, 1),
+                    from: 32,
                     to: 91,
                     amount: 1000,
                 },
+                source_version: Dot::new(32, 1),
                 history: HashSet::new(),
             },
         }]);
@@ -409,10 +415,11 @@ mod tests {
             from: 32,
             msg: Msg {
                 transfer: Transfer {
-                    source_version: Dot::new(32, 1),
+                    from: 32,
                     to: 54,
                     amount: 1000,
                 },
+                source_version: Dot::new(32, 1),
                 history: HashSet::new(),
             },
         }]);
