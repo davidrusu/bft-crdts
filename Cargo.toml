@@ -7,6 +7,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crdts = "2.0.0"
+crdts = { path = "../rust-crdt" }
+# crdts = "2.0.0"
 quickcheck = "0.9.2"
-hashbrown = "0.1.8"

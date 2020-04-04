@@ -1,63 +1,233 @@
-// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
-
-// TODO: remove unused derives
+/// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
+/// Deviations from AT2 as defined in the paper
+/// 1. TODO: we decompose dependancy tracking from the distribute algorithm
+/// 2. TODO: we have the entire network tracking the dependancies; I think this was a bug in the original paper, email authors to get their thoughts. Not tracking deps at the network level may allow an attackers to get benign proc's to apply a transfer early.
+/// 3. TODO: we genaralize over the distributed algorithm
+/// 4. TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
-use crdts::vclock::{Dot, VClock};
-use crdts::CmRDT;
+use crdts::{CmRDT, Dot, VClock};
 
-type ProcID = u8;
+type Identity = u8;
+type Account = Identity; // In the paper, Identity and Account are synonymous
 type Money = i64;
 
 #[derive(Debug)]
-struct Proc {
-    id: ProcID,
-    initial_balances: HashMap<ProcID, Money>,
-    // Applied knowledged by ProcID
-    seq: VClock<ProcID>,
-    // Delivered but not neccessarily applied knowledge by ProcID
-    rec: VClock<ProcID>,
-    // Set of validated transfers involving a given Proc
-    hist: HashMap<ProcID, HashSet<Transfer>>,
+struct Bank {
+    initial_balances: HashMap<Account, Money>,
+    // Set of validated transfers involving a given identity
+    hist: HashMap<Account, HashSet<BankOp>>,
     // Set of last incoming transfers for account of local process p
-    deps: HashSet<Transfer>,
-    // Set of delivered (but not validated) transfers
-    to_validate: Vec<(ProcID, Msg)>,
-    peers: HashSet<ProcID>,
+    deps: HashSet<BankOp>,
+}
+
+impl Bank {
+    fn new() -> Self {
+        Bank {
+            initial_balances: HashMap::new(),
+            hist: HashMap::new(),
+            deps: HashSet::new(),
+        }
+    }
+
+    fn open_account(&mut self, account: Account, initial_balance: Money) {
+        self.initial_balances.insert(account, initial_balance);
+    }
+
+    fn initial_balance(&self, account: &Account) -> Money {
+        self.initial_balances
+            .get(&account)
+            .cloned()
+            .expect(&format!(
+                "[ERROR] No initial balance for account {}",
+                account
+            ))
+    }
+
+    fn balance(&self, account: &Account) -> Money {
+        let account_history = self.history(&account).union(&self.deps).cloned().collect();
+        self.balance_from_history(&account, &account_history)
+    }
+
+    fn balance_from_history(&self, acc: &Account, h: &HashSet<BankOp>) -> Money {
+        let outgoing: Money = h
+            .iter()
+            .filter_map(|op| match op {
+                BankOp::Nop => None,
+                BankOp::Transfer { from, amount, .. } => Some((from, amount)),
+            })
+            .filter(|(from, _)| *from == acc)
+            .map(|(_, amount)| amount)
+            .sum();
+        let incoming: Money = h
+            .iter()
+            .filter_map(|op| match op {
+                BankOp::Nop => None,
+                BankOp::Transfer { to, amount, .. } => Some((to, amount)),
+            })
+            .filter(|(to, _)| *to == acc)
+            .map(|(_, amount)| amount)
+            .sum();
+
+        let balance_delta = incoming - outgoing;
+        let balance = self.initial_balance(acc) + balance_delta;
+
+        assert!(balance >= 0);
+
+        balance
+    }
+
+    fn history(&self, account: &Account) -> HashSet<BankOp> {
+        self.hist.get(account).cloned().unwrap_or_default()
+    }
+
+    fn transfer(&self, from: Account, to: Account, amount: Money) -> BankOp {
+        if self.balance(&from) < amount {
+            // not enough money in the account to complete the transfer
+            println!(
+                "Not enough money in {}'s account to transfer {} to {}. (balance: {})",
+                from,
+                amount,
+                to,
+                self.balance(&from)
+            );
+            BankOp::Nop
+        } else {
+            BankOp::Transfer { from, to, amount }
+        }
+    }
+
+    fn validate_op(&self, source_proc: Identity, op: &BankOp) -> bool {
+        match op {
+            BankOp::Nop => true,
+            BankOp::Transfer { from, to, amount } => {
+                let affected_accounts = op.affected_accounts();
+                let sender_history = self.history(from);
+                let balance_of_sender = self.balance_from_history(&from, &sender_history);
+
+                if !affected_accounts.contains(&from) {
+                    println!("[INVALID] The account we are transferring money from ({:?}) was not listed as one of the affected resources: {:?}", from, affected_accounts);
+                    false
+                } else if !affected_accounts.contains(&to) {
+                    println!("[INVALID] The account we are transferring money to ({:?}) was not listed as one of the affected resources: {:?}", to, affected_accounts);
+                    false
+                } else if affected_accounts.len() != 2 {
+                    println!(
+                        "[INVALID] Too many affected resources: {:?}",
+                        affected_accounts
+                    );
+                    false
+                } else if from != &source_proc {
+                    println!(
+                        "[INVALID] Transfer from {:?} was was initiated by a proc that does not own this account: {:?}",
+                        source_proc, from
+                    );
+                    false
+                } else if &balance_of_sender < amount {
+                    println!(
+                        "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
+                        balance_of_sender, amount
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    /// Executed when a transfer transitions delivered to validated
+    fn on_validated(&mut self, from: Identity, op: BankOp) {
+        assert!(self.validate_op(from, &op));
+
+        match op {
+            BankOp::Nop => (),
+            BankOp::Transfer { from, to, .. } => {
+                // Update the history for the outgoing account
+                self.hist.entry(from).or_default().insert(op);
+
+                // Update the history for the incoming account
+                self.hist.entry(to).or_default().insert(op);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct Transfer {
-    from: ProcID,
-    to: ProcID,
-    amount: Money,
+enum BankOp {
+    Nop,
+    Transfer {
+        from: Identity,
+        to: Identity,
+        amount: Money,
+    },
+}
+
+impl BankOp {
+    // Include all accounts affected by this operation.
+    fn affected_accounts(&self) -> HashSet<Account> {
+        match self {
+            BankOp::Nop => HashSet::new(),
+            BankOp::Transfer { from, to, .. } => vec![*from, *to].into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Msg {
-    transfer: Transfer,
-    source_version: Dot<ProcID>,
-    history: HashSet<Transfer>,
+    op: BankOp,
+    source_version: Dot<Identity>,
+    deps: HashSet<BankOp>,
+}
+
+#[derive(Debug)]
+struct Proc {
+    // The name this process goes by
+    id: Identity,
+
+    // The global bank we are keeping in sync across all procs in the network
+    bank: Bank,
+
+    // Applied knowledged by Identity
+    seq: VClock<Identity>,
+
+    // Delivered but not neccessarily applied knowledge by Identity
+    rec: VClock<Identity>,
+
+    // The set of all Op's affecting an account
+    hist: HashMap<Account, HashSet<BankOp>>,
+
+    // Set of delivered (but not validated) transfers
+    to_validate: Vec<(Identity, Msg)>,
+
+    // The set of operations that have been applied after the last operation completed by this Proc
+    deps: HashSet<BankOp>,
+
+    // The set of known peers. This can likely move to the Secure Broadcast impl.
+    peers: HashSet<Identity>,
 }
 
 impl Proc {
-    fn new(id: ProcID, initial_balance: Money) -> Self {
-        Proc {
+    fn new(id: Identity, initial_balance: Money) -> Self {
+        let mut proc = Proc {
             id,
-            initial_balances: vec![(id, initial_balance)].into_iter().collect(),
+            bank: Bank::new(),
             seq: VClock::new(),
             rec: VClock::new(),
             hist: HashMap::new(),
-            deps: HashSet::new(),
             to_validate: Vec::new(),
+            deps: HashSet::new(),
             peers: HashSet::new(),
-        }
+        };
+
+        proc.bank.open_account(id, initial_balance);
+
+        proc
     }
 
-    fn onboard(&mut self, peers: Vec<ProcID>) -> Vec<Cmd> {
-        let initial_balance = self.initial_balance_for_proc(self.id);
-
+    fn onboard(&mut self, peers: Vec<Identity>) -> Vec<Cmd> {
+        let initial_balance = self.bank.initial_balance(&self.id);
         peers
             .iter()
             .cloned()
@@ -69,50 +239,24 @@ impl Proc {
             .collect()
     }
 
-    fn transfer(&mut self, from: ProcID, to: ProcID, amount: Money) -> Vec<Cmd> {
+    fn transfer(&mut self, from: Identity, to: Identity, amount: Money) -> Vec<Cmd> {
         assert_eq!(from, self.id);
-
-        if self.read(from) < amount {
-            // not enough money in the account to complete the transfer
-            vec![]
-        } else {
-            vec![Cmd::BroadcastMsg {
-                from: self.id,
-                msg: Msg {
-                    transfer: Transfer { from, to, amount },
-                    source_version: self.seq.inc(from),
-                    history: self.deps.clone(),
-                },
-            }]
-        }
+        vec![Cmd::BroadcastMsg {
+            from: from,
+            msg: Msg {
+                op: self.bank.transfer(from, to, amount),
+                source_version: self.seq.inc(from),
+                deps: self.deps.clone(),
+            },
+        }]
     }
 
-    fn read(&self, account: ProcID) -> Money {
-        self.balance(
-            account,
-            &self
-                .hist_for_proc(account)
-                .union(&self.deps)
-                .cloned()
-                .collect(),
-        )
-    }
-
-    fn balance(&self, a: ProcID, h: &HashSet<Transfer>) -> Money {
-        let outgoing: Money = h.iter().filter(|t| t.from == a).map(|t| t.amount).sum();
-        let incoming: Money = h.iter().filter(|t| t.to == a).map(|t| t.amount).sum();
-
-        let balance_delta = incoming - outgoing;
-
-        let balance = self.initial_balance_for_proc(a) + balance_delta;
-
-        assert!(balance >= 0);
-
-        balance
+    fn read(&self, account: &Account) -> Money {
+        self.bank.balance(&account)
     }
 
     /// Executed when we successfully deliver messages to process p
-    fn on_delivery(&mut self, from: ProcID, msg: Msg) {
+    fn on_delivery(&mut self, from: Identity, msg: Msg) {
         assert_eq!(from, msg.source_version.actor);
 
         // Secure broadcast callback
@@ -132,56 +276,63 @@ impl Proc {
     }
 
     /// Executed when a transfer from `from` becomes valid.
-    fn on_validated(&mut self, from: ProcID, msg: &Msg) {
+    fn on_validated(&mut self, from: Identity, msg: &Msg) {
         assert!(self.valid(from, &msg));
         assert_eq!(msg.source_version, self.seq.inc(from));
+        let affected_accounts = msg.op.affected_accounts();
 
-        // Update the history for the outgoing account
-        self.hist
-            .entry(msg.source_version.actor)
-            .or_default()
-            .insert(msg.transfer);
+        // Update history for each affected account
+        for account in affected_accounts.iter() {
+            self.hist.entry(account.clone()).or_default().insert(msg.op);
+        }
 
-        // Update the history for the incoming account
-        self.hist
-            .entry(msg.transfer.to)
-            .or_default()
-            .insert(msg.transfer);
-
+        // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
+        // TODO: rename Proc::rec to Proc::forward_knowledge ala. VVwE
+        // TODO: add test that "forward_knowleged >= knowledge" is invariant
         self.seq.apply(msg.source_version);
 
-        if msg.transfer.to == self.id {
-            // This transfer directly affects the account of this process.
+        // TODO: we need to remove this branching logic, all proc's should be executing the same code globally
+
+        if msg.source_version.actor != self.id && affected_accounts.contains(&self.id) {
+            // This transfer directly affects the account of this process
+            // and it was not initiated by this proc.
             // THUS, it becomes a dependancy of the next transfer executed by this process.
-            self.deps.insert(msg.transfer);
+            self.deps.insert(msg.op);
         }
 
         if msg.source_version.actor == self.id {
-            // This transfer is outgoing from account of local process (it was sent by this proc)
+            // If I initiated this operation, then this callback tells me that the network has
+            // accepted the operation. I can now clear my dependancies
 
             // In the paper, they clear the deps after the broadcast completes
             // in self.transfer, we use an event model here so we can't guarantee
             // the broadcast completes successfully from within the transfer function.
             // We move the clearing of the deps here since this is where we now know
             // the broadcast succeeded
+
+            // sanity check that we had not accepted any new transfers affecting this account while waiting for this transfer to succeed
+            assert_eq!(self.deps, msg.deps);
             self.deps.clear();
         }
+
+        // let the algorithm know that the operation is valid
+        self.bank.on_validated(from, msg.op);
     }
 
-    fn valid(&self, from: ProcID, msg: &Msg) -> bool {
-        let balance_of_sender = self.balance(msg.source_version.actor, &self.hist_for_proc(from));
-        let sender_history = self.hist_for_proc(from);
+    fn valid(&self, from: Identity, msg: &Msg) -> bool {
+        let sender_history = self.hist.get(&from).cloned().unwrap_or_default();
+        let affected_accounts = msg.op.affected_accounts();
 
-        if from != msg.source_version.actor {
+        if !affected_accounts.contains(&from) {
+            println!(
+                "[INVALID] The source {} is not included in the set of affected accounts {:?}",
+                from, affected_accounts
+            );
+            false
+        } else if from != msg.source_version.actor {
             println!(
                 "[INVALID] Transfer from {:?} does not match the msg source version {:?}",
                 from, msg.source_version
-            );
-            false
-        } else if msg.transfer.from != msg.source_version.actor {
-            println!(
-                "[INVALID] Transfer from {:?} does not have matching the msg source version and msg transfer from fields {:?} != {:?}",
-                from, msg.source_version, msg.transfer.from
             );
             false
         } else if msg.source_version != self.seq.inc(from) {
@@ -190,50 +341,34 @@ impl Proc {
                 msg.source_version, from, self.seq.dot(from)
             );
             false
-        } else if balance_of_sender < msg.transfer.amount {
-            println!(
-                "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
-                balance_of_sender, msg.transfer.amount
-            );
-            false
-        } else if !msg.history.is_subset(&sender_history) {
+        } else if !msg.deps.is_subset(&sender_history) {
             println!(
                 "[INVALID] known history of sender {:?} not subset of msg history {:?}",
-                msg.history, sender_history
+                msg.deps, sender_history
             );
             false
         } else {
-            true
+            // Finally, check with the underlying algorithm
+            self.bank.validate_op(from, &msg.op)
         }
     }
 
-    fn hist_for_proc(&self, p: ProcID) -> HashSet<Transfer> {
-        self.hist.get(&p).cloned().unwrap_or_default()
-    }
-
-    fn initial_balance_for_proc(&self, p: ProcID) -> Money {
-        self.initial_balances
-            .get(&p)
-            .cloned()
-            .expect(&format!("[ERROR] No initial balance for proc {}", p))
-    }
-
-    fn handle_join_request(&mut self, new_proc: ProcID, initial_balance: Money) -> Vec<Cmd> {
+    fn handle_join_request(&mut self, new_proc: Identity, initial_balance: Money) -> Vec<Cmd> {
         if !self.peers.contains(&new_proc) {
             self.peers.insert(new_proc);
-            self.initial_balances.insert(new_proc, initial_balance);
+            self.bank.open_account(new_proc, initial_balance);
 
             vec![Cmd::JoinRequest {
                 to: new_proc,
                 proc_to_join: self.id,
-                initial_balance: self.initial_balance_for_proc(self.id),
+                initial_balance: self.bank.initial_balance(&self.id),
             }]
         } else {
             vec![]
         }
     }
 
-    fn handle_msg(&mut self, from: ProcID, msg: Msg) -> Vec<Cmd> {
+    fn handle_msg(&mut self, from: Identity, msg: Msg) -> Vec<Cmd> {
         self.on_delivery(from, msg);
         self.process_msg_queue();
         vec![]
@@ -253,24 +388,24 @@ impl Proc {
 
 #[derive(Debug, Default)]
 struct Net {
-    procs: HashMap<ProcID, Proc>,
+    procs: HashMap<Identity, Proc>,
 }
 
 #[derive(Debug)]
 enum Cmd {
     JoinRequest {
-        to: ProcID,
-        proc_to_join: ProcID,
+        to: Identity,
+        proc_to_join: Identity,
         initial_balance: Money,
     },
     BroadcastMsg {
-        from: ProcID,
+        from: Identity,
         msg: Msg,
     },
 }
 
 impl Net {
-    fn add_proc(&mut self, id: ProcID, initial_balance: Money) {
+    fn add_proc(&mut self, id: Identity, initial_balance: Money) {
         assert!(!self.procs.contains_key(&id));
         let peers = self.procs.keys().cloned().collect();
         let mut new_proc = Proc::new(id, initial_balance);
@@ -281,14 +416,14 @@ impl Net {
         self.step_until_done(proc_onboarding_cmds);
     }
 
-    fn read_balance_from_perspective_of_proc(&self, id: ProcID, account: ProcID) -> Money {
+    fn read_balance_from_perspective_of_proc(&self, id: Identity, account: Identity) -> Money {
         self.procs
             .get(&id)
-            .map(|p| p.read(account))
+            .map(|p| p.read(&account))
             .expect("[ERROR] No proc by that name")
     }
 
-    fn transfer(&mut self, source: ProcID, from: ProcID, to: ProcID, amount: Money) {
+    fn transfer(&mut self, source: Identity, from: Identity, to: Identity, amount: Money) {
         let source_proc = self
             .procs
             .get_mut(&source)
@@ -318,8 +453,8 @@ impl Net {
 
     fn handle_join_request(
         &mut self,
-        to: ProcID,
-        new_proc: ProcID,
+        to: Identity,
+        new_proc: Identity,
         initial_balance: Money,
     ) -> Vec<Cmd> {
         let to_proc = self
@@ -330,7 +465,7 @@ impl Net {
         to_proc.handle_join_request(new_proc, initial_balance)
     }
 
-    fn handle_broadcast_msg(&mut self, from: ProcID, msg: Msg) -> Vec<Cmd> {
+    fn handle_broadcast_msg(&mut self, from: Identity, msg: Msg) -> Vec<Cmd> {
         let mut causal_nexts: Vec<Cmd> = Vec::new();
         for (to, proc) in self.procs.iter_mut() {
             if to == &from {
@@ -343,7 +478,7 @@ impl Net {
         let next_cmds_triggered_by_msg = self
             .procs
             .get_mut(&from)
-            .expect(&format!("[ERROR] No proc with ProcID {}", from))
+            .expect(&format!("[ERROR] No proc with Identity {}", from))
             .handle_msg(from, msg);
 
         causal_nexts.extend(next_cmds_triggered_by_msg);
@@ -373,6 +508,8 @@ mod tests {
         net.add_proc(32, 1000);
         net.add_proc(91, 0);
 
+        println!("After adding procs: {:#?}", net);
+
         assert_eq!(net.read_balance_from_perspective_of_proc(32, 32), 1000);
         assert_eq!(net.read_balance_from_perspective_of_proc(91, 91), 0);
 
@@ -397,13 +534,13 @@ mod tests {
         net.step_until_done(vec![Cmd::BroadcastMsg {
             from: 32,
             msg: Msg {
-                transfer: Transfer {
+                op: BankOp::Transfer {
                     from: 32,
                     to: 91,
                     amount: 1000,
                 },
                 source_version: Dot::new(32, 1),
-                history: HashSet::new(),
+                deps: HashSet::new(),
             },
         }]);
 
@@ -414,13 +551,13 @@ mod tests {
         net.step_until_done(vec![Cmd::BroadcastMsg {
             from: 32,
             msg: Msg {
-                transfer: Transfer {
+                op: BankOp::Transfer {
                     from: 32,
                     to: 54,
                     amount: 1000,
                 },
                 source_version: Dot::new(32, 1),
-                history: HashSet::new(),
+                deps: HashSet::new(),
             },
         }]);
 
