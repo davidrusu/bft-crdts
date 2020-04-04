@@ -6,8 +6,8 @@ pub type Money = i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Transfer {
-    pub from: Identity,
-    pub to: Identity,
+    pub from: Account,
+    pub to: Account,
     pub amount: Money,
 }
 
