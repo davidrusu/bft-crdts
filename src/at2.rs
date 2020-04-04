@@ -1,9 +1,10 @@
 /// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
 /// Deviations from AT2 as defined in the paper
-/// 1. DONE: we decompose dependency tracking from the distributed algorithm
-/// 2. TODO: we have the entire network tracking the dependancies; I think this was a bug in the original paper, email authors to get their thoughts. Not tracking deps at the network level may allow an attackers to get benign proc's to apply a transfer early.
-/// 3. TODO: we genaralize over the distributed algorithm
-/// 4. TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
+/// 1.  DONE: we decompose dependency tracking from the distributed algorithm
+/// 2.  DONE: we have the entire network tracking the dependancies;
+/// 2a. TODO: I think this was a bug in the original paper, email authors to get their thoughts. Not tracking deps at the network level may allow an attackers to convince benign proc's to apply a transfer early.
+/// 3.  TODO: we genaralize over the distributed algorithm
+/// 4.  TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
