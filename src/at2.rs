@@ -144,6 +144,8 @@ impl Transfer {
 struct Msg {
     op: Transfer,
     source_version: Dot<Identity>,
+
+    // TODO: now that the network is tracking dependancies, do we need to include them in the msg?
     deps: HashSet<Transfer>,
 }
 
