@@ -17,7 +17,7 @@ type Money = i64;
 struct Bank {
     initial_balances: HashMap<Account, Money>,
     // Set of all transfers impacting a given account
-    hist: HashMap<Account, HashSet<BankOp>>,
+    hist: HashMap<Account, HashSet<Transfer>>,
 }
 
 impl Bank {
@@ -42,32 +42,19 @@ impl Bank {
             ))
     }
 
+    fn read(&self, acc: &Account) -> Money {
+        self.balance(acc)
+    }
+
     fn balance(&self, acc: &Account) -> Money {
         // TODO: in the paper, when we read from an account, we union the account
         //       history with the deps, I don't see a use for this since anything
         //       in deps is already in the account history. Think this through a
         //       bit more carefully.
-
         let h = self.history(&acc);
 
-        let outgoing: Money = h
-            .iter()
-            .filter_map(|op| match op {
-                BankOp::Nop => None,
-                BankOp::Transfer { from, amount, .. } => Some((from, amount)),
-            })
-            .filter(|(from, _)| *from == acc)
-            .map(|(_, amount)| amount)
-            .sum();
-        let incoming: Money = h
-            .iter()
-            .filter_map(|op| match op {
-                BankOp::Nop => None,
-                BankOp::Transfer { to, amount, .. } => Some((to, amount)),
-            })
-            .filter(|(to, _)| *to == acc)
-            .map(|(_, amount)| amount)
-            .sum();
+        let outgoing: Money = h.iter().filter(|t| t.from == *acc).map(|t| t.amount).sum();
+        let incoming: Money = h.iter().filter(|t| t.to == *acc).map(|t| t.amount).sum();
 
         let balance_delta = incoming - outgoing;
         let balance = self.initial_balance(acc) + balance_delta;
@@ -77,105 +64,87 @@ impl Bank {
         balance
     }
 
-    fn history(&self, account: &Account) -> HashSet<BankOp> {
+    fn history(&self, account: &Account) -> HashSet<Transfer> {
         self.hist.get(account).cloned().unwrap_or_default()
     }
 
-    fn transfer(&self, from: Account, to: Account, amount: Money) -> BankOp {
-        if self.balance(&from) < amount {
-            // not enough money in the account to complete the transfer
+    fn transfer(&self, from: Account, to: Account, amount: Money) -> Option<Transfer> {
+        let balance = self.balance(&from);
+        if balance < amount {
             println!(
-                "Not enough money in {}'s account to transfer {} to {}. (balance: {})",
-                from,
-                amount,
-                to,
-                self.balance(&from)
+                "Not enough money in {} account to transfer {} to {}. (balance: {})",
+                from, amount, to, balance
             );
-            BankOp::Nop
+            None
         } else {
-            BankOp::Transfer { from, to, amount }
+            Some(Transfer { from, to, amount })
         }
     }
 
     /// Protection against Byzantines
-    fn validate(&self, source_proc: Identity, op: &BankOp) -> bool {
-        match op {
-            BankOp::Nop => true,
-            BankOp::Transfer { from, to, amount } => {
-                let affected_accounts = op.affected_accounts();
-                let balance_of_sender = self.balance(&from);
+    fn validate(&self, source_proc: Identity, op: &Transfer) -> bool {
+        let affected_accounts = op.affected_accounts();
+        let Transfer { from, to, amount } = op;
+        let balance_of_sender = self.read(&from);
 
-                if !affected_accounts.contains(&from) {
-                    println!("[INVALID] The account we are transferring money from ({:?}) was not listed as one of the affected resources: {:?}", from, affected_accounts);
-                    false
-                } else if !affected_accounts.contains(&to) {
-                    println!("[INVALID] The account we are transferring money to ({:?}) was not listed as one of the affected resources: {:?}", to, affected_accounts);
-                    false
-                } else if affected_accounts.len() != 2 {
-                    println!(
-                        "[INVALID] Too many affected resources: {:?}",
-                        affected_accounts
-                    );
-                    false
-                } else if from != &source_proc {
-                    println!(
+        if !affected_accounts.contains(&from) {
+            println!("[INVALID] The account we are transferring money from ({:?}) was not listed as one of the affected resources: {:?}", from, affected_accounts);
+            false
+        } else if !affected_accounts.contains(&to) {
+            println!("[INVALID] The account we are transferring money to ({:?}) was not listed as one of the affected resources: {:?}", to, affected_accounts);
+            false
+        } else if affected_accounts.len() != 2 {
+            println!(
+                "[INVALID] Too many affected resources: {:?}",
+                affected_accounts
+            );
+            false
+        } else if from != &source_proc {
+            println!(
                         "[INVALID] Transfer from {:?} was was initiated by a proc that does not own this account: {:?}",
                         source_proc, from
                     );
-                    false
-                } else if &balance_of_sender < amount {
-                    println!(
-                        "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
-                        balance_of_sender, amount
-                    );
-                    false
-                } else {
-                    true
-                }
-            }
+            false
+        } else if &balance_of_sender < amount {
+            println!(
+                "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
+                balance_of_sender, amount
+            );
+            false
+        } else {
+            true
         }
     }
 
     /// Executed once an op has been validated
-    fn apply(&mut self, op: BankOp) {
-        match op {
-            BankOp::Nop => (),
-            BankOp::Transfer { from, to, .. } => {
-                // Update the history for the outgoing account
-                self.hist.entry(from).or_default().insert(op);
+    fn apply(&mut self, op: Transfer) {
+        // Update the history for the outgoing account
+        self.hist.entry(op.from).or_default().insert(op);
 
-                // Update the history for the incoming account
-                self.hist.entry(to).or_default().insert(op);
-            }
-        }
+        // Update the history for the incoming account
+        self.hist.entry(op.to).or_default().insert(op);
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum BankOp {
-    Nop,
-    Transfer {
-        from: Identity,
-        to: Identity,
-        amount: Money,
-    },
+struct Transfer {
+    from: Identity,
+    to: Identity,
+    amount: Money,
 }
 
-impl BankOp {
-    // Include all accounts affected by this operation.
+impl Transfer {
+    /// Include all accounts affected by this operation.
     fn affected_accounts(&self) -> HashSet<Account> {
-        match self {
-            BankOp::Nop => HashSet::new(),
-            BankOp::Transfer { from, to, .. } => vec![*from, *to].into_iter().collect(),
-        }
+        vec![self.from, self.to].into_iter().collect()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Msg {
-    op: BankOp,
+    op: Transfer,
     source_version: Dot<Identity>,
-    deps: HashSet<BankOp>,
+    deps: HashSet<Transfer>,
 }
 
 #[derive(Debug)]
@@ -193,13 +162,13 @@ struct Proc {
     rec: VClock<Identity>,
 
     // The set of all Op's affecting an account
-    hist: HashMap<Account, HashSet<BankOp>>,
+    hist: HashMap<Account, HashSet<Transfer>>,
 
     // Set of delivered (but not validated) transfers
     to_validate: Vec<(Identity, Msg)>,
 
     // The set of operations that have been applied after the last operation completed by this Proc
-    deps: HashSet<BankOp>,
+    deps: HashSet<Transfer>,
 
     // The set of known peers. This can likely move to the Secure Broadcast impl.
     peers: HashSet<Identity>,
@@ -238,18 +207,21 @@ impl Proc {
 
     fn transfer(&mut self, from: Identity, to: Identity, amount: Money) -> Vec<Cmd> {
         assert_eq!(from, self.id);
-        vec![Cmd::BroadcastMsg {
-            from: from,
-            msg: Msg {
-                op: self.bank.transfer(from, to, amount),
-                source_version: self.seq.inc(from),
-                deps: self.deps.clone(),
-            },
-        }]
+        match self.bank.transfer(from, to, amount) {
+            Some(transfer) => vec![Cmd::BroadcastMsg {
+                from: from,
+                msg: Msg {
+                    op: transfer,
+                    source_version: self.seq.inc(from),
+                    deps: self.deps.clone(),
+                },
+            }],
+            None => vec![],
+        }
     }
 
     fn read(&self, account: &Account) -> Money {
-        self.bank.balance(&account)
+        self.bank.read(&account)
     }
 
     /// Executed when we successfully deliver messages to process p
@@ -531,7 +503,7 @@ mod tests {
         net.step_until_done(vec![Cmd::BroadcastMsg {
             from: 32,
             msg: Msg {
-                op: BankOp::Transfer {
+                op: Transfer {
                     from: 32,
                     to: 91,
                     amount: 1000,
@@ -548,7 +520,7 @@ mod tests {
         net.step_until_done(vec![Cmd::BroadcastMsg {
             from: 32,
             msg: Msg {
-                op: BankOp::Transfer {
+                op: Transfer {
                     from: 32,
                     to: 54,
                     amount: 1000,
