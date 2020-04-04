@@ -16,10 +16,8 @@ type Money = i64;
 #[derive(Debug)]
 struct Bank {
     initial_balances: HashMap<Account, Money>,
-    // Set of validated transfers involving a given identity
+    // Set of all transfers impacting a given account
     hist: HashMap<Account, HashSet<BankOp>>,
-    // Set of last incoming transfers for account of local process p
-    deps: HashSet<BankOp>,
 }
 
 impl Bank {
@@ -27,7 +25,6 @@ impl Bank {
         Bank {
             initial_balances: HashMap::new(),
             hist: HashMap::new(),
-            deps: HashSet::new(),
         }
     }
 
@@ -46,8 +43,10 @@ impl Bank {
     }
 
     fn balance(&self, account: &Account) -> Money {
-        let account_history = self.history(&account).union(&self.deps).cloned().collect();
-        self.balance_from_history(&account, &account_history)
+        // TODO: in the paper, when we read from an account, we union the account
+        //       history with the deps, I don't see a use for this since anything
+        //       in deps is already in the account history.
+        self.balance_from_history(&account, &self.history(&account))
     }
 
     fn balance_from_history(&self, acc: &Account, h: &HashSet<BankOp>) -> Money {
