@@ -167,8 +167,8 @@ struct Proc {
     // Set of delivered (but not validated) transfers
     to_validate: Vec<(Identity, Msg)>,
 
-    // The set of operations that have been applied after the last operation completed by this Proc
-    deps: HashSet<Transfer>,
+    // Operations that are causally related to the next operation on a given account
+    deps: HashMap<Account, HashSet<Transfer>>,
 
     // The set of known peers. This can likely move to the Secure Broadcast impl.
     peers: HashSet<Identity>,
@@ -183,7 +183,7 @@ impl Proc {
             rec: VClock::new(),
             hist: HashMap::new(),
             to_validate: Vec::new(),
-            deps: HashSet::new(),
+            deps: HashMap::new(),
             peers: HashSet::new(),
         };
 
@@ -205,7 +205,7 @@ impl Proc {
             .collect()
     }
 
-    fn transfer(&mut self, from: Identity, to: Identity, amount: Money) -> Vec<Cmd> {
+    fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Vec<Cmd> {
         assert_eq!(from, self.id);
         match self.bank.transfer(from, to, amount) {
             Some(transfer) => vec![Cmd::BroadcastMsg {
@@ -213,7 +213,7 @@ impl Proc {
                 msg: Msg {
                     op: transfer,
                     source_version: self.seq.inc(from),
-                    deps: self.deps.clone(),
+                    deps: self.deps.get(&from).cloned().unwrap_or_default(),
                 },
             }],
             None => vec![],
@@ -248,11 +248,20 @@ impl Proc {
     fn on_validated(&mut self, from: Identity, msg: &Msg) {
         assert!(self.valid(from, &msg));
         assert_eq!(msg.source_version, self.seq.inc(from));
-        let affected_accounts = msg.op.affected_accounts();
+        // sanity check that the source proc had not accepted any new transfers on
+        // it's account while this transfer was in progress.
+        assert_eq!(
+            self.deps
+                .get(&msg.source_version.actor)
+                .cloned()
+                .unwrap_or_default(),
+            msg.deps
+        );
 
         // Update history for each affected account
-        for account in affected_accounts.iter() {
-            self.hist.entry(account.clone()).or_default().insert(msg.op);
+        for account in msg.op.affected_accounts() {
+            self.hist.entry(account).or_default().insert(msg.op);
+            self.deps.entry(account).or_default().insert(msg.op);
         }
 
         // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
@@ -260,29 +269,18 @@ impl Proc {
         // TODO: add test that "forward_knowleged >= knowledge" is invariant
         self.seq.apply(msg.source_version);
 
-        // TODO: we need to remove this branching logic, all proc's should be executing the same code globally
-
-        if msg.source_version.actor != self.id && affected_accounts.contains(&self.id) {
-            // This transfer directly affects the account of this process
-            // and it was not initiated by this proc.
-            // THUS, it becomes a dependancy of the next transfer executed by this process.
-            self.deps.insert(msg.op);
-        }
-
-        if msg.source_version.actor == self.id {
-            // If I initiated this operation, then this callback tells me that the network has
-            // accepted the operation. I can now clear my dependancies
-
-            // In the paper, they clear the deps after the broadcast completes
-            // in self.transfer, we use an event model here so we can't guarantee
-            // the broadcast completes successfully from within the transfer function.
-            // We move the clearing of the deps here since this is where we now know
-            // the broadcast succeeded
-
-            // sanity check that we had not accepted any new transfers affecting this account while waiting for this transfer to succeed
-            assert_eq!(self.deps, msg.deps);
-            self.deps.clear();
-        }
+        // This callback tells us that the network has accepted the operation. We must
+        // now clear the dependancies of the source proc.
+        //
+        // In the paper, they clear the deps after the broadcast completes in
+        // self.transfer, but since we use an event model here so we can't guarantee
+        // the broadcast completes successfully from within the transfer function.
+        // We move the clearing of the deps here since this is where we now know
+        // the broadcast succeeded.
+        self.deps
+            .entry(msg.source_version.actor)
+            .or_default()
+            .clear();
 
         // Finally, apply the operation to the underlying algorithm
         self.bank.apply(msg.op);
@@ -291,8 +289,19 @@ impl Proc {
     fn valid(&self, from: Identity, msg: &Msg) -> bool {
         let sender_history = self.hist.get(&from).cloned().unwrap_or_default();
         let affected_accounts = msg.op.affected_accounts();
+        let sender_deps = self
+            .deps
+            .get(&msg.source_version.actor)
+            .cloned()
+            .unwrap_or_default();
 
-        if !affected_accounts.contains(&from) {
+        if sender_deps != msg.deps {
+            println!(
+                "[INVALID] The msg deps {:?} does not match the expected deps {:?}",
+                msg.deps, sender_deps
+            );
+            false
+        } else if !affected_accounts.contains(&from) {
             println!(
                 "[INVALID] The source {} is not included in the set of affected accounts {:?}",
                 from, affected_accounts
