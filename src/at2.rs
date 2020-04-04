@@ -1,6 +1,6 @@
 /// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
 /// Deviations from AT2 as defined in the paper
-/// 1. TODO: we decompose dependancy tracking from the distribute algorithm
+/// 1. DONE: we decompose dependency tracking from the distributed algorithm
 /// 2. TODO: we have the entire network tracking the dependancies; I think this was a bug in the original paper, email authors to get their thoughts. Not tracking deps at the network level may allow an attackers to get benign proc's to apply a transfer early.
 /// 3. TODO: we genaralize over the distributed algorithm
 /// 4. TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
@@ -42,14 +42,14 @@ impl Bank {
             ))
     }
 
-    fn balance(&self, account: &Account) -> Money {
+    fn balance(&self, acc: &Account) -> Money {
         // TODO: in the paper, when we read from an account, we union the account
         //       history with the deps, I don't see a use for this since anything
-        //       in deps is already in the account history.
-        self.balance_from_history(&account, &self.history(&account))
-    }
+        //       in deps is already in the account history. Think this through a
+        //       bit more carefully.
 
-    fn balance_from_history(&self, acc: &Account, h: &HashSet<BankOp>) -> Money {
+        let h = self.history(&acc);
+
         let outgoing: Money = h
             .iter()
             .filter_map(|op| match op {
@@ -97,13 +97,13 @@ impl Bank {
         }
     }
 
-    fn validate_op(&self, source_proc: Identity, op: &BankOp) -> bool {
+    /// Protection against Byzantines
+    fn validate(&self, source_proc: Identity, op: &BankOp) -> bool {
         match op {
             BankOp::Nop => true,
             BankOp::Transfer { from, to, amount } => {
                 let affected_accounts = op.affected_accounts();
-                let sender_history = self.history(from);
-                let balance_of_sender = self.balance_from_history(&from, &sender_history);
+                let balance_of_sender = self.balance(&from);
 
                 if !affected_accounts.contains(&from) {
                     println!("[INVALID] The account we are transferring money from ({:?}) was not listed as one of the affected resources: {:?}", from, affected_accounts);
@@ -136,10 +136,8 @@ impl Bank {
         }
     }
 
-    /// Executed when a transfer transitions delivered to validated
-    fn on_validated(&mut self, from: Identity, op: BankOp) {
-        assert!(self.validate_op(from, &op));
-
+    /// Executed once an op has been validated
+    fn apply(&mut self, op: BankOp) {
         match op {
             BankOp::Nop => (),
             BankOp::Transfer { from, to, .. } => {
@@ -314,8 +312,8 @@ impl Proc {
             self.deps.clear();
         }
 
-        // let the algorithm know that the operation is valid
-        self.bank.on_validated(from, msg.op);
+        // Finally, apply the operation to the underlying algorithm
+        self.bank.apply(msg.op);
     }
 
     fn valid(&self, from: Identity, msg: &Msg) -> bool {
@@ -348,7 +346,7 @@ impl Proc {
             false
         } else {
             // Finally, check with the underlying algorithm
-            self.bank.validate_op(from, &msg.op)
+            self.bank.validate(from, &msg.op)
         }
     }
 
