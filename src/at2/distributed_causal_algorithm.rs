@@ -11,9 +11,6 @@ pub trait DistributedCausalAlgorithm: Default {
     /// Initialize a new resource
     fn create_resource(&mut self, resource_id: Self::Ref, initial_state: Self::State);
 
-    /// I don't feel this is needed
-    fn initial_state(&self, resource_id: &Self::Ref) -> Self::State;
-
     /// Read the current state of a resource
     fn read(&self, resource_id: Self::Ref) -> Self::State;
 
