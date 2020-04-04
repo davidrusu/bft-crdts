@@ -3,8 +3,6 @@ use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeSet, HashMap, HashSet}; // TODO: can we replace HashMap with BTreeMap
 
 mod at2;
-mod at2_bank;
-mod decomposed_at2;
 
 // we use low cardinality types to improve the chances of interesting
 // things happening in our randomized testing

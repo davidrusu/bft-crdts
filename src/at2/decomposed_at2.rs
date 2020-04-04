@@ -10,7 +10,7 @@ use std::mem;
 
 use crdts::{CmRDT, Dot, VClock};
 
-use crate::at2_bank::{Account, Bank, Identity, Money, Transfer};
+use crate::at2::bank::{Account, Bank, Identity, Money, Transfer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Msg {
