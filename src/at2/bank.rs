@@ -12,7 +12,7 @@ pub struct Transfer {
 }
 
 impl Transfer {
-    /// Include all accounts affected by this operation.
+    /// These affected accounts become causally dependent on this operation.
     pub fn affected_accounts(&self) -> HashSet<Account> {
         vec![self.from, self.to].into_iter().collect()
     }
