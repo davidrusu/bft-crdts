@@ -20,7 +20,6 @@ name = "bft-crdts"
 version = "0.1.0"
 dependencies = [
  "crdts",
- "quickcheck",
 ]
 
 [[package]]
@@ -32,8 +31,10 @@ checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 [[package]]
 name = "crdts"
 version = "3.0.0"
+source = "git+https://github.com/rust-crdt/rust-crdt?branch=useability-improvements#a880c631961c93a56f8346b29b6919f6c5e007a5"
 dependencies = [
  "num-bigint",
+ "quickcheck",
  "serde",
 ]
 

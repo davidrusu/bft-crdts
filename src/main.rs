@@ -1,6 +1,7 @@
-use crdts::{orswot, vclock::Dot, vclock::VClock, CmRDT, CvRDT};
+use crdts::quickcheck::{Arbitrary, Gen};
+use crdts::{orswot, CmRDT, CvRDT, Dot, VClock};
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeSet, HashMap, HashSet}; // TODO: can we replace HashMap with BTreeMap
+use std::collections::{BTreeSet, HashMap};
 
 mod at2;
 
@@ -30,17 +31,17 @@ struct CausalityEnforcer {
     /// The most recent version of each actor that has been released to the replica
     knowledge: VClock<Actor>,
 
-    /// If we receive an WrappedOp from a replica that skips a version, we can not apply
-    /// this WrappedOp to local state so, we buffer it here.
+    /// If we receive an Msg from a replica that skips a version, we can not apply
+    /// this Msg to local state so, we buffer it here.
     ///
-    /// The WrappedOp is ordered on the version counter of the replica that sent it.
-    /// We rely on the fact that BTreeSet is ordered to re-order WrappedOp's as we insert them.
-    forward_exceptions: HashMap<Actor, BTreeSet<WrappedOp>>,
+    /// The Msg is ordered on the version counter of the replica that sent it.
+    /// We rely on the fact that BTreeSet is ordered to re-order Msg's as we insert them.
+    forward_exceptions: HashMap<Actor, BTreeSet<Msg>>,
 }
 
 impl CausalityEnforcer {
-    fn enforce(&mut self, op: WrappedOp) -> BTreeSet<WrappedOp> {
-        if self.knowledge > VClock::from(op.source_version.clone()) {
+    fn enforce(&mut self, op: Msg) -> BTreeSet<Msg> {
+        if self.knowledge > VClock::from(op.source_version) {
             // we've already seen this op, drop it
             assert!(self.verify_no_exception_for(&op));
             BTreeSet::new()
@@ -55,16 +56,9 @@ impl CausalityEnforcer {
                 .or_default();
 
             let ops_that_are_now_safe_to_apply = replica_exceptions.iter().cloned().scan(
-                op.source_version.counter,
-                |previous_counter, exception_op| {
-                    // TODO: this should be rewritten as
-                    // ```
-                    // if previous_version.inc() == exception_op.source_version {...}
-                    // ```
-                    // This requires a `Dot::inc()` method in rust-crdt.
-                    //
-                    // reason: dropping to the level of counter's here is breaking the Dot abstraction
-                    if *previous_counter + 1 == exception_op.source_version.counter {
+                op.source_version,
+                |previous_version, exception_op| {
+                    if previous_version.inc() == exception_op.source_version {
                         Some(exception_op)
                     } else {
                         None
@@ -94,7 +88,7 @@ impl CausalityEnforcer {
         }
     }
 
-    fn verify_no_exception_for(&self, op: &WrappedOp) -> bool {
+    fn verify_no_exception_for(&self, op: &Msg) -> bool {
         let we_have_an_exception = self
             .forward_exceptions
             .get(&op.source_version.actor)
@@ -106,25 +100,18 @@ impl CausalityEnforcer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WrappedOp {
+struct Msg {
     op: Op,
     source_version: Dot<Actor>,
 }
 
-impl PartialOrd for WrappedOp {
+impl PartialOrd for Msg {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // TODO: the bulk of this logic should move to an `impl PartialOrd for Dot` in rust-crdt
-        if self.source_version.actor == other.source_version.actor {
-            self.source_version
-                .counter
-                .partial_cmp(&other.source_version.counter)
-        } else {
-            None
-        }
+        self.source_version.partial_cmp(&other.source_version)
     }
 }
 
-impl Ord for WrappedOp {
+impl Ord for Msg {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(&other).unwrap()
     }
@@ -134,7 +121,7 @@ impl Ord for WrappedOp {
 struct Replica {
     id: Actor,
     state: Crdt,
-    logs: HashMap<Actor, Vec<WrappedOp>>, // the history of edits made by each actor
+    logs: HashMap<Actor, Vec<Msg>>, // the history of edits made by each actor
     causality_enforcer: CausalityEnforcer,
 }
 
@@ -148,7 +135,7 @@ impl Replica {
         }
     }
 
-    fn recv_op(&mut self, wrapped_op: WrappedOp) {
+    fn recv_op(&mut self, wrapped_op: Msg) {
         for causally_ordered_wrapped_op in self.causality_enforcer.enforce(wrapped_op) {
             // Store the op for replication
             self.logs
@@ -173,9 +160,8 @@ struct Network {
 enum NetworkEvent {
     Nop,
     ReplicaAdded(Actor),
-    /// TrueOps are sourced by the source replica referenced in the WrappedOp
-    TrueOpSent(Actor, WrappedOp),
-    // FalseOpSent(Actor, WrappedOp), // FalseOps are Op's that did not originate from the source referenced in WrappedOp
+    OpSent(Actor, Msg),
+    // FalseOpSent(Actor, Msg), // FalseOps are Op's that did not originate from the source referenced in Msg
     // ReplicaDisabled(Actor),
     // ReplicaEnabled(Actor),
 }
@@ -193,15 +179,14 @@ impl Network {
         match event {
             NetworkEvent::Nop => (),
             NetworkEvent::ReplicaAdded(replica_id) => {
-                if self.replicas.contains_key(&replica_id) {
-                    // TODO: what is the expected behaviour if a replica trys to join with the same
-                    //       replica id as an existing one.
-                    //       for now we drop the op.
-                } else {
-                    self.replicas.insert(replica_id, Replica::new(replica_id));
-                }
+                // TODO: what is the expected behaviour if a replica trys to join with the same
+                //       replica id as an existing one.
+                //       for now we drop the op.
+                self.replicas
+                    .entry(replica_id)
+                    .or_insert_with(|| Replica::new(replica_id));
             }
-            NetworkEvent::TrueOpSent(dest, wrapped_op) => {
+            NetworkEvent::OpSent(dest, wrapped_op) => {
                 if let Some(replica) = self.replicas.get_mut(&dest) {
                     for ordered_op in self.causality_enforcer.enforce(wrapped_op.clone()) {
                         self.mythical_global_state.apply(ordered_op.op);
@@ -216,10 +201,10 @@ impl Network {
     }
 
     fn sync_replicas_via_op_replication(&mut self) {
-        let replica_op_logs: Vec<Vec<WrappedOp>> = self
+        let replica_op_logs: Vec<Vec<Msg>> = self
             .replicas
             .values()
-            .flat_map(|r| r.logs.values().cloned().collect::<Vec<Vec<WrappedOp>>>())
+            .flat_map(|r| r.logs.values().cloned().collect::<Vec<Vec<Msg>>>())
             .collect();
 
         self.replicas.iter_mut().for_each(|(_, replica)| {
@@ -258,59 +243,56 @@ fn main() {
     println!("psst. run `QUICKCHECK_TESTS=100000 cargo test` instead");
 }
 
+impl Arbitrary for NetworkEvent {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        match u8::arbitrary(g) % 3 {
+            0 => NetworkEvent::Nop,
+            1 => NetworkEvent::ReplicaAdded(Actor::arbitrary(g)),
+            2 => NetworkEvent::OpSent(
+                Actor::arbitrary(g), // actor to send this op to
+                Msg {
+                    op: Op::arbitrary(g),
+                    source_version: Dot::arbitrary(g),
+                },
+            ),
+            _ => panic!("tried to generate invalid network event"),
+        }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        let mut shrunk_events = Vec::new();
+        match self.clone() {
+            NetworkEvent::Nop => (),
+            NetworkEvent::ReplicaAdded(_) => (),
+            NetworkEvent::OpSent(actor, Msg { op, source_version }) => {
+                for shrunk_op in op.shrink() {
+                    shrunk_events.push(NetworkEvent::OpSent(
+                        actor,
+                        Msg {
+                            op: shrunk_op,
+                            source_version,
+                        },
+                    ));
+                }
+                for shrunk_version in source_version.shrink() {
+                    shrunk_events.push(NetworkEvent::OpSent(
+                        actor,
+                        Msg {
+                            op: op.clone(),
+                            source_version: shrunk_version,
+                        },
+                    ));
+                }
+            }
+        }
+        Box::new(shrunk_events.into_iter())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::{quickcheck, Arbitrary, Gen}; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
-
-    impl Arbitrary for NetworkEvent {
-        fn arbitrary<G: Gen>(g: &mut G) -> Self {
-            // TODO: move this into an `impl Arbitrary for Dot`
-            let dot = Dot {
-                actor: Actor::arbitrary(g),
-                counter: u64::arbitrary(g) % 100, // TODO: is this fair?
-            };
-
-            // TODO: move this into an `impl Arbitrary for VClock`
-            let mut clock = VClock::new();
-            for _ in 0..(u8::arbitrary(g) % 10) {
-                // TODO: this % 10 is not nice
-                clock.apply(Dot {
-                    actor: Actor::arbitrary(g),
-                    counter: u64::arbitrary(g) % 100, // TODO: is this fair?
-                });
-            }
-
-            let mut members = HashSet::new();
-            for _ in 0..(u8::arbitrary(g) % 10) {
-                // TODO: this % 10 is not nice
-                members.insert(Data::arbitrary(g));
-            }
-
-            // TODO: It would be really nice to generate op's polymorphically over the chosen
-            //       CRDT type, right now we only hard code fuzzing for Orswot ops.
-            let op = match u8::arbitrary(g) % 2 {
-                0 => Op::Add { members, dot },
-                1 => Op::Rm { members, clock },
-                _ => panic!("tried to generate invalid op"),
-            };
-
-            let source = Actor::arbitrary(g);
-            let dest = Actor::arbitrary(g);
-            let source_version = Dot {
-                actor: source,
-                counter: u64::arbitrary(g), // TODO: modulo something small to improve chances of things happening
-            };
-            let wrapped_op = WrappedOp { op, source_version };
-
-            match u8::arbitrary(g) % 3 {
-                0 => NetworkEvent::Nop,
-                1 => NetworkEvent::ReplicaAdded(Actor::arbitrary(g)),
-                2 => NetworkEvent::TrueOpSent(dest, wrapped_op),
-                _ => panic!("tried to generate invalid network event"),
-            }
-        }
-    }
+    use crdts::quickcheck::quickcheck;
 
     quickcheck! {
         fn replicas_converge_to_global_state(network_events: Vec<NetworkEvent>) -> bool {
@@ -382,9 +364,9 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::ReplicaAdded(2),
-            NetworkEvent::TrueOpSent(
+            NetworkEvent::OpSent(
                 2,
-                WrappedOp {
+                Msg {
                     op: Op::Add {
                         dot: Dot {
                             actor: 32,
@@ -399,9 +381,9 @@ mod tests {
                 },
             ),
             NetworkEvent::ReplicaAdded(3),
-            NetworkEvent::TrueOpSent(
+            NetworkEvent::OpSent(
                 3,
-                WrappedOp {
+                Msg {
                     op: Op::Add {
                         dot: Dot {
                             actor: 32,
@@ -431,9 +413,9 @@ mod tests {
 
         let network_events = vec![
             NetworkEvent::ReplicaAdded(7),
-            NetworkEvent::TrueOpSent(
+            NetworkEvent::OpSent(
                 7,
-                WrappedOp {
+                Msg {
                     op: Op::Add {
                         dot: Dot {
                             actor: 64,
@@ -461,7 +443,7 @@ mod tests {
     #[test]
     fn test_causal_order_enforcer_reordering() {
         let mut enforcer = CausalityEnforcer::default();
-        let op2 = WrappedOp {
+        let op2 = Msg {
             op: Op::Add {
                 dot: Dot {
                     actor: 43,
@@ -474,7 +456,7 @@ mod tests {
                 counter: 2,
             },
         };
-        let op1 = WrappedOp {
+        let op1 = Msg {
             op: Op::Add {
                 dot: Dot {
                     actor: 1,

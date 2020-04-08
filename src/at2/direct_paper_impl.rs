@@ -199,7 +199,7 @@ impl Proc {
         self.initial_balances
             .get(&p)
             .cloned()
-            .expect(&format!("[ERROR] No initial balance for proc {}", p))
+            .unwrap_or_else(|| panic!("[ERROR] No initial balance for proc {}", p))
     }
 
     fn balance(&self, a: ProcID, h: &BTreeSet<Transfer>) -> Money {
@@ -340,7 +340,7 @@ impl Net {
         let next_cmds_triggered_by_msg = self
             .procs
             .get_mut(&from)
-            .expect(&format!("[ERROR] No proc with ProcID {}", from))
+            .unwrap_or_else(|| panic!("[ERROR] No proc wiht ProcID {}", from))
             .handle_msg(from, msg);
 
         causal_nexts.extend(next_cmds_triggered_by_msg);
