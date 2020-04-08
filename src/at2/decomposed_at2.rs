@@ -3,7 +3,7 @@
 /// 1.  DONE: we decompose dependency tracking from the distributed algorithm
 /// 3.  TODO: we genaralize over the distributed algorithm
 /// 4.  TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem;
 
 use crdts::{CmRDT, Dot, VClock};
@@ -38,7 +38,7 @@ impl Proc {
     fn new(id: Identity, initial_balance: Money) -> Self {
         let mut proc = Proc {
             id,
-            bank: Bank::new(),
+            bank: Bank::new(id),
             seq: VClock::new(),
             rec: VClock::new(),
             hist: HashMap::new(),
@@ -46,7 +46,7 @@ impl Proc {
             peers: HashSet::new(),
         };
 
-        proc.bank.open_account(id, initial_balance);
+        proc.bank.onboard_account(id, initial_balance);
         proc
     }
 
@@ -108,7 +108,7 @@ impl Proc {
 
         // Update history for each affected account
         for account in msg.op.affected_accounts() {
-            self.hist.entry(account).or_default().insert(msg.op);
+            self.hist.entry(account).or_default().insert(msg.op.clone());
         }
 
         // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
@@ -117,7 +117,7 @@ impl Proc {
         self.seq.apply(msg.source_version);
 
         // Finally, apply the operation to the underlying algorithm
-        self.bank.apply(msg.op);
+        self.bank.apply(msg.op.clone());
     }
 
     fn valid(&self, from: Identity, msg: &Msg) -> bool {
@@ -144,7 +144,7 @@ impl Proc {
             false
         } else if !msg.op.deps().is_subset(&sender_history) {
             println!(
-                "[INVALID] msg dependancies {} is not a subset of the sender history {}",
+                "[INVALID] msg dependancies {:?} is not a subset of the sender history {:?}",
                 msg.op.deps(),
                 sender_history
             );
@@ -158,7 +158,7 @@ impl Proc {
     fn handle_join_request(&mut self, new_proc: Identity, initial_balance: Money) -> Vec<Cmd> {
         if !self.peers.contains(&new_proc) {
             self.peers.insert(new_proc);
-            self.bank.open_account(new_proc, initial_balance);
+            self.bank.onboard_account(new_proc, initial_balance);
 
             vec![Cmd::JoinRequest {
                 to: new_proc,
@@ -340,7 +340,7 @@ mod tests {
                     from: 32,
                     to: 91,
                     amount: 1000,
-                    deps: HashSet::new(),
+                    deps: BTreeSet::new(),
                 },
                 source_version: Dot::new(32, 1),
             },
@@ -357,7 +357,7 @@ mod tests {
                     from: 32,
                     to: 54,
                     amount: 1000,
-                    deps: HashSet::new(),
+                    deps: BTreeSet::new(),
                 },
                 source_version: Dot::new(32, 1),
             },

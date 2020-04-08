@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub type Identity = u8;
 pub type Account = Identity; // In the paper, Identity and Account are synonymous
 pub type Money = i64;
 
-#[derive(Debug, Clone, Vec, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Transfer {
     pub from: Account,
     pub to: Account,
@@ -12,12 +12,12 @@ pub struct Transfer {
 
     /// set of transactions that need to be applied before this transfer can be validated
     /// ie. a proof of funds
-    pub deps: Vec<Transfer>,
+    pub deps: BTreeSet<Transfer>,
 }
 
 impl Transfer {
-    pub fn deps(&self) -> HashSet<Account> {
-        self.deps.clone()
+    pub fn deps(&self) -> HashSet<Transfer> {
+        self.deps.iter().cloned().collect()
     }
 
     /// These affected accounts become causally dependent on this operation.
@@ -32,19 +32,20 @@ pub struct Bank {
     initial_balances: HashMap<Account, Money>,
     // Set of all transfers impacting a given account
     hist: HashMap<Account, HashSet<Transfer>>,
-    deps: HashSet<Transfer>,
+    deps: BTreeSet<Transfer>,
 }
 
 impl Bank {
-    pub fn new() -> Self {
+    pub fn new(id: Identity) -> Self {
         Bank {
+            id,
             initial_balances: HashMap::new(),
             hist: HashMap::new(),
-            deps: HashSet::new(),
+            deps: BTreeSet::new(),
         }
     }
 
-    pub fn open_account(&mut self, account: Account, initial_balance: Money) {
+    pub fn onboard_account(&mut self, account: Account, initial_balance: Money) {
         self.initial_balances.insert(account, initial_balance);
     }
 
@@ -124,10 +125,10 @@ impl Bank {
     /// Executed once an op has been validated
     pub fn apply(&mut self, op: Transfer) {
         // Update the history for the outgoing account
-        self.hist.entry(op.from).or_default().insert(op);
+        self.hist.entry(op.from).or_default().insert(op.clone());
 
         // Update the history for the incoming account
-        self.hist.entry(op.to).or_default().insert(op);
+        self.hist.entry(op.to).or_default().insert(op.clone());
 
         if op.from == self.id {
             // In the paper, they clear the deps after the broadcast completes in
