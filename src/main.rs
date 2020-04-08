@@ -1,6 +1,7 @@
-use crdts::{orswot, vclock::Dot, vclock::VClock, CmRDT, CvRDT};
+use crdts::quickcheck::{quickcheck, Arbitrary, Gen};
+use crdts::{orswot, CmRDT, CvRDT, Dot, VClock};
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeSet, HashMap, HashSet}; // TODO: can we replace HashMap with BTreeMap
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod at2;
 
@@ -55,16 +56,9 @@ impl CausalityEnforcer {
                 .or_default();
 
             let ops_that_are_now_safe_to_apply = replica_exceptions.iter().cloned().scan(
-                op.source_version.counter,
-                |previous_counter, exception_op| {
-                    // TODO: this should be rewritten as
-                    // ```
-                    // if previous_version.inc() == exception_op.source_version {...}
-                    // ```
-                    // This requires a `Dot::inc()` method in rust-crdt.
-                    //
-                    // reason: dropping to the level of counter's here is breaking the Dot abstraction
-                    if *previous_counter + 1 == exception_op.source_version.counter {
+                op.source_version,
+                |previous_version, exception_op| {
+                    if previous_version.inc() == exception_op.source_version {
                         Some(exception_op)
                     } else {
                         None
@@ -113,14 +107,7 @@ struct WrappedOp {
 
 impl PartialOrd for WrappedOp {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // TODO: the bulk of this logic should move to an `impl PartialOrd for Dot` in rust-crdt
-        if self.source_version.actor == other.source_version.actor {
-            self.source_version
-                .counter
-                .partial_cmp(&other.source_version.counter)
-        } else {
-            None
-        }
+        self.source_version.partial_cmp(&other.source_version)
     }
 }
 
@@ -261,54 +248,50 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::{quickcheck, Arbitrary, Gen}; // TODO: push out a new version of `crdts` to get rid of this hashbrown dep
 
     impl Arbitrary for NetworkEvent {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
-            // TODO: move this into an `impl Arbitrary for Dot`
-            let dot = Dot {
-                actor: Actor::arbitrary(g),
-                counter: u64::arbitrary(g) % 100, // TODO: is this fair?
-            };
-
-            // TODO: move this into an `impl Arbitrary for VClock`
-            let mut clock = VClock::new();
-            for _ in 0..(u8::arbitrary(g) % 10) {
-                // TODO: this % 10 is not nice
-                clock.apply(Dot {
-                    actor: Actor::arbitrary(g),
-                    counter: u64::arbitrary(g) % 100, // TODO: is this fair?
-                });
-            }
-
-            let mut members = HashSet::new();
-            for _ in 0..(u8::arbitrary(g) % 10) {
-                // TODO: this % 10 is not nice
-                members.insert(Data::arbitrary(g));
-            }
-
-            // TODO: It would be really nice to generate op's polymorphically over the chosen
-            //       CRDT type, right now we only hard code fuzzing for Orswot ops.
-            let op = match u8::arbitrary(g) % 2 {
-                0 => Op::Add { members, dot },
-                1 => Op::Rm { members, clock },
-                _ => panic!("tried to generate invalid op"),
-            };
-
-            let source = Actor::arbitrary(g);
-            let dest = Actor::arbitrary(g);
-            let source_version = Dot {
-                actor: source,
-                counter: u64::arbitrary(g), // TODO: modulo something small to improve chances of things happening
-            };
-            let wrapped_op = WrappedOp { op, source_version };
-
             match u8::arbitrary(g) % 3 {
                 0 => NetworkEvent::Nop,
                 1 => NetworkEvent::ReplicaAdded(Actor::arbitrary(g)),
-                2 => NetworkEvent::TrueOpSent(dest, wrapped_op),
+                2 => NetworkEvent::TrueOpSent(
+                    Actor::arbitrary(g), // actor to send this op to
+                    WrappedOp {
+                        op: Op::arbitrary(g),
+                        source_version: Dot::arbitrary(g),
+                    },
+                ),
                 _ => panic!("tried to generate invalid network event"),
             }
+        }
+
+        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+            let mut shrunk_events = Vec::new();
+            match self {
+                NetworkEvent::Nop => (),
+                NetworkEvent::ReplicaAdded(_) => (),
+                NetworkEvent::TrueOpSent(actor, WrappedOp { op, source_version }) => {
+                    for shrunk_op in op.shrink() {
+                        shrunk_events.push(NetworkEvent::TrueOpSent(
+                            actor.clone(),
+                            WrappedOp {
+                                op: shrunk_op.clone(),
+                                source_version: source_version.clone(),
+                            },
+                        ));
+                    }
+                    for shrunk_version in source_version.shrink() {
+                        shrunk_events.push(NetworkEvent::TrueOpSent(
+                            actor.clone(),
+                            WrappedOp {
+                                op: op.clone(),
+                                source_version: shrunk_version,
+                            },
+                        ));
+                    }
+                }
+            }
+            Box::new(shrunk_events.into_iter())
         }
     }
 
