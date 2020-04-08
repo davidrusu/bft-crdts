@@ -37,29 +37,26 @@ impl Bank {
         self.initial_balances.insert(account, initial_balance);
     }
 
-    pub fn initial_balance(&self, account: &Account) -> Money {
+    pub fn initial_balance(&self, account: Account) -> Money {
         self.initial_balances
             .get(&account)
             .cloned()
-            .expect(&format!(
-                "[ERROR] No initial balance for account {}",
-                account
-            ))
+            .unwrap_or_else(|| panic!("[ERROR] No initial balance for account {}", account))
     }
 
-    pub fn read(&self, acc: &Account) -> Money {
+    pub fn read(&self, acc: Account) -> Money {
         self.balance(acc)
     }
 
-    fn balance(&self, acc: &Account) -> Money {
+    fn balance(&self, acc: Account) -> Money {
         // TODO: in the paper, when we read from an account, we union the account
         //       history with the deps, I don't see a use for this since anything
         //       in deps is already in the account history. Think this through a
         //       bit more carefully.
-        let h = self.history(&acc);
+        let h = self.history(acc);
 
-        let outgoing: Money = h.iter().filter(|t| t.from == *acc).map(|t| t.amount).sum();
-        let incoming: Money = h.iter().filter(|t| t.to == *acc).map(|t| t.amount).sum();
+        let outgoing: Money = h.iter().filter(|t| t.from == acc).map(|t| t.amount).sum();
+        let incoming: Money = h.iter().filter(|t| t.to == acc).map(|t| t.amount).sum();
 
         let balance_delta = incoming - outgoing;
         let balance = self.initial_balance(acc) + balance_delta;
@@ -69,12 +66,12 @@ impl Bank {
         balance
     }
 
-    fn history(&self, account: &Account) -> HashSet<Transfer> {
-        self.hist.get(account).cloned().unwrap_or_default()
+    fn history(&self, account: Account) -> HashSet<Transfer> {
+        self.hist.get(&account).cloned().unwrap_or_default()
     }
 
     pub fn transfer(&self, from: Account, to: Account, amount: Money) -> Option<Transfer> {
-        let balance = self.balance(&from);
+        let balance = self.balance(from);
         if balance < amount {
             println!(
                 "Not enough money in {} account to transfer {} to {}. (balance: {})",
@@ -88,7 +85,7 @@ impl Bank {
 
     /// Protection against Byzantines
     pub fn validate(&self, source_proc: Identity, op: &Transfer) -> bool {
-        let balance_of_sender = self.read(&op.from);
+        let balance_of_sender = self.read(op.from);
 
         if op.from != source_proc {
             println!(

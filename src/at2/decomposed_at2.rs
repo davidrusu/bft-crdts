@@ -59,7 +59,7 @@ impl Proc {
     }
 
     fn onboard(&mut self, peers: Vec<Identity>) -> Vec<Cmd> {
-        let initial_balance = self.bank.initial_balance(&self.id);
+        let initial_balance = self.bank.initial_balance(self.id);
         peers
             .iter()
             .cloned()
@@ -86,8 +86,8 @@ impl Proc {
         }
     }
 
-    fn read(&self, account: &Account) -> Money {
-        self.bank.read(&account)
+    fn read(&self, account: Account) -> Money {
+        self.bank.read(account)
     }
 
     /// Executed when we successfully deliver messages to process p
@@ -205,7 +205,7 @@ impl Proc {
             vec![Cmd::JoinRequest {
                 to: new_proc,
                 proc_to_join: self.id,
-                initial_balance: self.bank.initial_balance(&self.id),
+                initial_balance: self.bank.initial_balance(self.id),
             }]
         } else {
             vec![]
@@ -263,7 +263,7 @@ impl Net {
     fn read_balance_from_perspective_of_proc(&self, id: Identity, account: Identity) -> Money {
         self.procs
             .get(&id)
-            .map(|p| p.read(&account))
+            .map(|p| p.read(account))
             .expect("[ERROR] No proc by that name")
     }
 
@@ -322,7 +322,7 @@ impl Net {
         let next_cmds_triggered_by_msg = self
             .procs
             .get_mut(&from)
-            .expect(&format!("[ERROR] No proc with Identity {}", from))
+            .unwrap_or_else(|| panic!("[ERROR] No proc iwth Identity {}", from))
             .handle_msg(from, msg);
 
         causal_nexts.extend(next_cmds_triggered_by_msg);

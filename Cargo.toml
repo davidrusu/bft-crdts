@@ -5,4 +5,5 @@ authors = ["David Rusu <davidrusu.me@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+# crdts = { path = "../rust-crdt" }
 crdts = { git = "https://github.com/rust-crdt/rust-crdt", branch = "useability-improvements" }
