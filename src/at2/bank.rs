@@ -4,14 +4,22 @@ pub type Identity = u8;
 pub type Account = Identity; // In the paper, Identity and Account are synonymous
 pub type Money = i64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Vec, PartialEq, Eq, Hash)]
 pub struct Transfer {
     pub from: Account,
     pub to: Account,
     pub amount: Money,
+
+    /// set of transactions that need to be applied before this transfer can be validated
+    /// ie. a proof of funds
+    pub deps: Vec<Transfer>,
 }
 
 impl Transfer {
+    pub fn deps(&self) -> HashSet<Account> {
+        self.deps.clone()
+    }
+
     /// These affected accounts become causally dependent on this operation.
     pub fn affected_accounts(&self) -> HashSet<Account> {
         vec![self.from, self.to].into_iter().collect()
@@ -20,9 +28,11 @@ impl Transfer {
 
 #[derive(Debug)]
 pub struct Bank {
+    id: Identity,
     initial_balances: HashMap<Account, Money>,
     // Set of all transfers impacting a given account
     hist: HashMap<Account, HashSet<Transfer>>,
+    deps: HashSet<Transfer>,
 }
 
 impl Bank {
@@ -30,6 +40,7 @@ impl Bank {
         Bank {
             initial_balances: HashMap::new(),
             hist: HashMap::new(),
+            deps: HashSet::new(),
         }
     }
 
@@ -79,7 +90,13 @@ impl Bank {
             );
             None
         } else {
-            Some(Transfer { from, to, amount })
+            let deps = self.deps.clone();
+            Some(Transfer {
+                from,
+                to,
+                amount,
+                deps,
+            })
         }
     }
 
@@ -111,5 +128,14 @@ impl Bank {
 
         // Update the history for the incoming account
         self.hist.entry(op.to).or_default().insert(op);
+
+        if op.from == self.id {
+            // In the paper, they clear the deps after the broadcast completes in
+            // self.transfer.
+            // Here we break up the initiation of the transfer from the completion.
+            // We move the clearing of the deps here since this is where we now know
+            // the transfer was successfully validated and applied by the network.
+            self.deps.clear();
+        }
     }
 }

@@ -1,8 +1,6 @@
 /// IMPLEMENTATION OF https://arxiv.org/pdf/1812.10844.pdf
 /// Deviations from AT2 as defined in the paper
 /// 1.  DONE: we decompose dependency tracking from the distributed algorithm
-/// 2.  DONE: we have the entire network tracking the dependancies;
-/// 2a. TODO: I think this was a bug in the original paper, email authors to get their thoughts. Not tracking deps at the network level may allow an attackers to convince benign proc's to apply a transfer early.
 /// 3.  TODO: we genaralize over the distributed algorithm
 /// 4.  TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
 use std::collections::{HashMap, HashSet};
@@ -16,9 +14,6 @@ use crate::at2::bank::{Account, Bank, Identity, Money, Transfer};
 struct Msg {
     op: Transfer,
     source_version: Dot<Identity>,
-
-    // TODO: now that the network is tracking dependancies, do we need to include them in the msg?
-    deps: HashSet<Transfer>,
 }
 
 #[derive(Debug)]
@@ -36,8 +31,6 @@ struct Proc {
     // Set of delivered (but not validated) transfers
     to_validate: Vec<(Identity, Msg)>,
     // Operations that are causally related to the next operation on a given account
-    deps: HashMap<Account, HashSet<Transfer>>,
-    // The set of known peers. This can likely move to the Secure Broadcast impl.
     peers: HashSet<Identity>,
 }
 
@@ -50,7 +43,6 @@ impl Proc {
             rec: VClock::new(),
             hist: HashMap::new(),
             to_validate: Vec::new(),
-            deps: HashMap::new(),
             peers: HashSet::new(),
         };
 
@@ -79,7 +71,6 @@ impl Proc {
                 msg: Msg {
                     op: transfer,
                     source_version: self.seq.inc(from),
-                    deps: self.deps.get(&from).cloned().unwrap_or_default(),
                 },
             }],
             None => vec![],
@@ -114,39 +105,16 @@ impl Proc {
     fn on_validated(&mut self, from: Identity, msg: &Msg) {
         assert!(self.valid(from, &msg));
         assert_eq!(msg.source_version, self.seq.inc(from));
-        // sanity check that the source proc had not accepted any new transfers on
-        // it's account while this transfer was in progress.
-        assert_eq!(
-            self.deps
-                .get(&msg.source_version.actor)
-                .cloned()
-                .unwrap_or_default(),
-            msg.deps
-        );
 
         // Update history for each affected account
         for account in msg.op.affected_accounts() {
             self.hist.entry(account).or_default().insert(msg.op);
-            self.deps.entry(account).or_default().insert(msg.op);
         }
 
         // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
         // TODO: rename Proc::rec to Proc::forward_knowledge ala. VVwE
         // TODO: add test that "forward_knowleged >= knowledge" is invariant
         self.seq.apply(msg.source_version);
-
-        // This callback tells us that the network has accepted the operation. We must
-        // now clear the dependancies of the source proc.
-        //
-        // In the paper, they clear the deps after the broadcast completes in
-        // self.transfer, but since we use an event model here so we can't guarantee
-        // the broadcast completes successfully from within the transfer function.
-        // We move the clearing of the deps here since this is where we now know
-        // the broadcast succeeded.
-        self.deps
-            .entry(msg.source_version.actor)
-            .or_default()
-            .clear();
 
         // Finally, apply the operation to the underlying algorithm
         self.bank.apply(msg.op);
@@ -155,19 +123,8 @@ impl Proc {
     fn valid(&self, from: Identity, msg: &Msg) -> bool {
         let sender_history = self.hist.get(&from).cloned().unwrap_or_default();
         let affected_accounts = msg.op.affected_accounts();
-        let sender_deps = self
-            .deps
-            .get(&msg.source_version.actor)
-            .cloned()
-            .unwrap_or_default();
 
-        if sender_deps != msg.deps {
-            println!(
-                "[INVALID] The msg deps {:?} does not match the expected deps {:?}",
-                msg.deps, sender_deps
-            );
-            false
-        } else if !affected_accounts.contains(&from) {
+        if !affected_accounts.contains(&from) {
             println!(
                 "[INVALID] The source {} is not included in the set of affected accounts {:?}",
                 from, affected_accounts
@@ -185,10 +142,11 @@ impl Proc {
                 msg.source_version, from, self.seq.dot(from)
             );
             false
-        } else if !msg.deps.is_subset(&sender_history) {
+        } else if !msg.op.deps().is_subset(&sender_history) {
             println!(
-                "[INVALID] known history of sender {:?} not subset of msg history {:?}",
-                msg.deps, sender_history
+                "[INVALID] msg dependancies {} is not a subset of the sender history {}",
+                msg.op.deps(),
+                sender_history
             );
             false
         } else {
@@ -382,9 +340,9 @@ mod tests {
                     from: 32,
                     to: 91,
                     amount: 1000,
+                    deps: HashSet::new(),
                 },
                 source_version: Dot::new(32, 1),
-                deps: HashSet::new(),
             },
         }]);
 
@@ -399,9 +357,9 @@ mod tests {
                     from: 32,
                     to: 54,
                     amount: 1000,
+                    deps: HashSet::new(),
                 },
                 source_version: Dot::new(32, 1),
-                deps: HashSet::new(),
             },
         }]);
 
