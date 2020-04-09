@@ -116,6 +116,14 @@ impl Bank {
                 "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
                 balance_of_sender, op.amount
             );
+
+            false
+        } else if !op.deps().is_subset(&self.history(op.from)) {
+            println!(
+                "[INVALID] op deps {:?} is not a subset of the source history: {:?}",
+                op.deps(),
+                self.history(op.from)
+            );
             false
         } else {
             true

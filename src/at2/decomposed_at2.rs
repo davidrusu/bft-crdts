@@ -142,13 +142,6 @@ impl Proc {
                 msg.source_version, from, self.seq.dot(from)
             );
             false
-        } else if !msg.op.deps().is_subset(&sender_history) {
-            println!(
-                "[INVALID] msg dependancies {:?} is not a subset of the sender history {:?}",
-                msg.op.deps(),
-                sender_history
-            );
-            false
         } else {
             // Finally, check with the underlying algorithm
             self.bank.validate(from, &msg.op)
