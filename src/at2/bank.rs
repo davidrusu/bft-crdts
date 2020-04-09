@@ -1,39 +1,40 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 pub type Identity = u8;
 pub type Account = Identity; // In the paper, Identity and Account are synonymous
 pub type Money = i64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Transfer {
     pub from: Account,
     pub to: Account,
     pub amount: Money,
-}
 
-impl Transfer {
-    /// These affected accounts become causally dependent on this operation.
-    pub fn affected_accounts(&self) -> HashSet<Account> {
-        vec![self.from, self.to].into_iter().collect()
-    }
+    /// set of transactions that need to be applied before this transfer can be validated
+    /// ie. a proof of funds
+    pub deps: BTreeSet<Transfer>,
 }
 
 #[derive(Debug)]
 pub struct Bank {
+    id: Identity,
     initial_balances: HashMap<Account, Money>,
     // Set of all transfers impacting a given account
-    hist: HashMap<Account, HashSet<Transfer>>,
+    hist: HashMap<Account, BTreeSet<Transfer>>,
+    deps: BTreeSet<Transfer>,
 }
 
 impl Bank {
-    pub fn new() -> Self {
+    pub fn new(id: Identity) -> Self {
         Bank {
+            id,
             initial_balances: HashMap::new(),
             hist: HashMap::new(),
+            deps: BTreeSet::new(),
         }
     }
 
-    pub fn open_account(&mut self, account: Account, initial_balance: Money) {
+    pub fn onboard_account(&mut self, account: Account, initial_balance: Money) {
         self.initial_balances.insert(account, initial_balance);
     }
 
@@ -66,7 +67,7 @@ impl Bank {
         balance
     }
 
-    fn history(&self, account: Account) -> HashSet<Transfer> {
+    fn history(&self, account: Account) -> BTreeSet<Transfer> {
         self.hist.get(&account).cloned().unwrap_or_default()
     }
 
@@ -79,7 +80,13 @@ impl Bank {
             );
             None
         } else {
-            Some(Transfer { from, to, amount })
+            let deps = self.deps.clone();
+            Some(Transfer {
+                from,
+                to,
+                amount,
+                deps,
+            })
         }
     }
 
@@ -98,6 +105,14 @@ impl Bank {
                 "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
                 balance_of_sender, op.amount
             );
+
+            false
+        } else if !op.deps.is_subset(&self.history(op.from)) {
+            println!(
+                "[INVALID] op deps {:?} is not a subset of the source history: {:?}",
+                op.deps,
+                self.history(op.from)
+            );
             false
         } else {
             true
@@ -107,9 +122,18 @@ impl Bank {
     /// Executed once an op has been validated
     pub fn apply(&mut self, op: Transfer) {
         // Update the history for the outgoing account
-        self.hist.entry(op.from).or_default().insert(op);
+        self.hist.entry(op.from).or_default().insert(op.clone());
 
         // Update the history for the incoming account
-        self.hist.entry(op.to).or_default().insert(op);
+        self.hist.entry(op.to).or_default().insert(op.clone());
+
+        if op.from == self.id {
+            // In the paper, they clear the deps after the broadcast completes in
+            // self.transfer.
+            // Here we break up the initiation of the transfer from the completion.
+            // We move the clearing of the deps here since this is where we now know
+            // the transfer was successfully validated and applied by the network.
+            self.deps.clear();
+        }
     }
 }
