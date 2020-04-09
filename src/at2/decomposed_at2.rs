@@ -26,8 +26,6 @@ struct Proc {
     seq: VClock<Identity>,
     // Delivered but not neccessarily applied knowledge by Identity
     rec: VClock<Identity>,
-    // The set of all Op's affecting an account
-    hist: HashMap<Account, HashSet<Transfer>>,
     // Set of delivered (but not validated) transfers
     to_validate: Vec<(Identity, Msg)>,
     // Operations that are causally related to the next operation on a given account
@@ -41,7 +39,6 @@ impl Proc {
             bank: Bank::new(id),
             seq: VClock::new(),
             rec: VClock::new(),
-            hist: HashMap::new(),
             to_validate: Vec::new(),
             peers: HashSet::new(),
         };
@@ -102,14 +99,9 @@ impl Proc {
     }
 
     /// Executed when a transfer from `from` becomes valid.
-    fn on_validated(&mut self, from: Identity, msg: &Msg) {
+    fn on_validated(&mut self, from: Identity, msg: Msg) {
         assert!(self.valid(from, &msg));
         assert_eq!(msg.source_version, self.seq.inc(from));
-
-        // Update history for each affected account
-        for account in msg.op.affected_accounts() {
-            self.hist.entry(account).or_default().insert(msg.op.clone());
-        }
 
         // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
         // TODO: rename Proc::rec to Proc::forward_knowledge ala. VVwE
@@ -117,20 +109,11 @@ impl Proc {
         self.seq.apply(msg.source_version);
 
         // Finally, apply the operation to the underlying algorithm
-        self.bank.apply(msg.op.clone());
+        self.bank.apply(msg.op);
     }
 
     fn valid(&self, from: Identity, msg: &Msg) -> bool {
-        let sender_history = self.hist.get(&from).cloned().unwrap_or_default();
-        let affected_accounts = msg.op.affected_accounts();
-
-        if !affected_accounts.contains(&from) {
-            println!(
-                "[INVALID] The source {} is not included in the set of affected accounts {:?}",
-                from, affected_accounts
-            );
-            false
-        } else if from != msg.source_version.actor {
+        if from != msg.source_version.actor {
             println!(
                 "[INVALID] Transfer from {:?} does not match the msg source version {:?}",
                 from, msg.source_version
@@ -173,7 +156,7 @@ impl Proc {
         let to_validate = mem::replace(&mut self.to_validate, Vec::new());
         for (to, msg) in to_validate {
             if self.valid(to, &msg) {
-                self.on_validated(to, &msg);
+                self.on_validated(to, msg);
             } else {
                 println!("[DROP] invalid message detected {:?}", (to, msg));
             }

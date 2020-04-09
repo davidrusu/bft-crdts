@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 pub type Identity = u8;
 pub type Account = Identity; // In the paper, Identity and Account are synonymous
@@ -15,23 +15,12 @@ pub struct Transfer {
     pub deps: BTreeSet<Transfer>,
 }
 
-impl Transfer {
-    pub fn deps(&self) -> HashSet<Transfer> {
-        self.deps.iter().cloned().collect()
-    }
-
-    /// These affected accounts become causally dependent on this operation.
-    pub fn affected_accounts(&self) -> HashSet<Account> {
-        vec![self.from, self.to].into_iter().collect()
-    }
-}
-
 #[derive(Debug)]
 pub struct Bank {
     id: Identity,
     initial_balances: HashMap<Account, Money>,
     // Set of all transfers impacting a given account
-    hist: HashMap<Account, HashSet<Transfer>>,
+    hist: HashMap<Account, BTreeSet<Transfer>>,
     deps: BTreeSet<Transfer>,
 }
 
@@ -78,7 +67,7 @@ impl Bank {
         balance
     }
 
-    fn history(&self, account: Account) -> HashSet<Transfer> {
+    fn history(&self, account: Account) -> BTreeSet<Transfer> {
         self.hist.get(&account).cloned().unwrap_or_default()
     }
 
@@ -118,10 +107,10 @@ impl Bank {
             );
 
             false
-        } else if !op.deps().is_subset(&self.history(op.from)) {
+        } else if !op.deps.is_subset(&self.history(op.from)) {
             println!(
                 "[INVALID] op deps {:?} is not a subset of the source history: {:?}",
-                op.deps(),
+                op.deps,
                 self.history(op.from)
             );
             false
