@@ -4,21 +4,23 @@
 /// 1.  DONE: we decompose dependency tracking from the distributed algorithm
 /// 3.  TODO: we genaralize over the distributed algorithm
 /// 4.  TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashSet;
 use std::mem;
 
 use crdts::{CmRDT, Dot, VClock};
+use serde::Serialize;
 
-use crate::at2::bank::{Account, Bank, Identity, Money, Transfer};
+use crate::at2::bank::{Account, Bank, Money, Transfer};
+use crate::at2::identity::Identity;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Msg {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
+pub struct Msg {
     op: Transfer,
     source_version: Dot<Identity>,
 }
 
 #[derive(Debug)]
-struct Proc {
+pub struct Proc {
     // The name this process goes by
     id: Identity,
 
@@ -39,7 +41,7 @@ struct Proc {
 }
 
 impl Proc {
-    fn new(id: Identity, initial_balance: Money) -> Self {
+    pub fn new(id: Identity, initial_balance: Money) -> Self {
         let mut proc = Proc {
             id,
             bank: Bank::new(id),
@@ -54,54 +56,42 @@ impl Proc {
         proc
     }
 
-    fn onboard(&self) -> Vec<Cmd> {
-        vec![Cmd::BroadcastNewPeer {
-            new_peer: self.id,
-            initial_balance: self.bank.initial_balance(self.id),
-        }]
-    }
-
-    fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Vec<Cmd> {
+    pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Msg> {
         assert_eq!(from, self.id);
-        match self.bank.transfer(from, to, amount) {
-            Some(transfer) => vec![Cmd::BroadcastMsg {
-                from: from,
-                msg: Msg {
-                    op: transfer,
-                    source_version: self.seq.inc(from),
-                },
-            }],
-            None => vec![],
-        }
+        self.bank.transfer(from, to, amount).map(|transfer_op| Msg {
+            op: transfer_op,
+            source_version: self.seq.inc(from),
+        })
     }
 
-    fn read(&self, account: Account) -> Money {
+    pub fn read(&self, account: Account) -> Money {
         self.bank.read(account)
     }
 
     /// Executed when we successfully deliver messages to process p
-    fn on_delivery(&mut self, from: Identity, msg: Msg) {
+    pub fn on_delivery(&mut self, from: Identity, msg: Msg) {
+        // TODO: this is no longer being executed
         assert_eq!(from, msg.source_version.actor);
 
         // Secure broadcast callback
         if msg.source_version == self.rec.inc(from) {
             println!(
-                "{} Accepted message from {} and enqueued for validation",
+                "{:?} Accepted message from {:?} and enqueued for validation",
                 self.id, from
             );
             self.rec.apply(msg.source_version);
             self.to_validate.push((from, msg));
         } else {
             println!(
-                "{} Rejected message from {}, transfer source version is invalid: {:?}",
+                "{:?} Rejected message from {:?}, transfer source version is invalid: {:?}",
                 self.id, from, msg.source_version
             );
         }
     }
 
     /// Executed when a transfer from `from` becomes valid.
-    fn on_validated(&mut self, from: Identity, msg: Msg) {
-        assert!(self.valid(from, &msg));
+    pub fn on_validated(&mut self, from: Identity, msg: Msg) {
+        assert!(self.validate(from, &msg));
         assert_eq!(msg.source_version, self.seq.inc(from));
 
         // TODO: rename Proc::seq to Proc::knowledge ala. VVwE
@@ -113,7 +103,7 @@ impl Proc {
         self.bank.apply(msg.op);
     }
 
-    fn validate(&self, from: Identity, msg: &Msg) -> bool {
+    pub fn validate(&self, from: Identity, msg: &Msg) -> bool {
         if from != msg.source_version.actor {
             println!(
                 "[INVALID] Transfer from {:?} does not match the msg source version {:?}",
@@ -122,7 +112,7 @@ impl Proc {
             false
         } else if msg.source_version != self.seq.inc(from) {
             println!(
-                "[INVALID] Source version {:?} is not a direct successor of last transfer from {}: {:?}",
+                "[INVALID] Source version {:?} is not a direct successor of last transfer from {:?}: {:?}",
                 msg.source_version, from, self.seq.dot(from)
             );
             false
@@ -132,35 +122,15 @@ impl Proc {
         }
     }
 
-    fn handle_new_peer(&mut self, new_proc: Identity, initial_balance: Money) -> Vec<Cmd> {
-        if !self.peers.contains(&new_proc) {
-            // this is a new peer
-            self.peers.insert(new_proc);
-            self.bank.onboard_account(new_proc, initial_balance);
-
-            // broadcast this proc so that the new peer will discover initial balances
-            // TODO: broadcast here is a bit overkill, just need a direct 1-1
-            //       communication with the new proc.
-            vec![Cmd::BroadcastNewPeer {
-                new_peer: self.id,
-                initial_balance: self.bank.initial_balance(self.id),
-            }]
-        } else {
-            // We already have this peer, do nothing
-            vec![]
-        }
-    }
-
-    fn handle_msg(&mut self, from: Identity, msg: Msg) -> Vec<Cmd> {
+    pub fn handle_msg(&mut self, from: Identity, msg: Msg) {
         self.on_delivery(from, msg);
         self.process_msg_queue();
-        vec![]
     }
 
-    fn process_msg_queue(&mut self) {
+    pub fn process_msg_queue(&mut self) {
         let to_validate = mem::replace(&mut self.to_validate, Vec::new());
         for (to, msg) in to_validate {
-            if self.valid(to, &msg) {
+            if self.validate(to, &msg) {
                 self.on_validated(to, msg);
             } else {
                 println!("[DROP] invalid message detected {:?}", (to, msg));

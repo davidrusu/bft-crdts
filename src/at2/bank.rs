@@ -1,10 +1,13 @@
 use std::collections::{BTreeSet, HashMap};
 
-pub type Identity = u8;
+use serde::Serialize;
+
+use crate::at2::identity::Identity;
+
 pub type Account = Identity; // In the paper, Identity and Account are synonymous
 pub type Money = i64;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Transfer {
     pub from: Account,
     pub to: Account,
@@ -18,9 +21,14 @@ pub struct Transfer {
 #[derive(Debug)]
 pub struct Bank {
     id: Identity,
+
+    // When a new account is opened, it will be given an initial balance
     initial_balances: HashMap<Account, Money>,
+
     // Set of all transfers impacting a given account
     hist: HashMap<Account, BTreeSet<Transfer>>,
+
+    // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,
 }
 
@@ -42,7 +50,7 @@ impl Bank {
         self.initial_balances
             .get(&account)
             .cloned()
-            .unwrap_or_else(|| panic!("[ERROR] No initial balance for account {}", account))
+            .unwrap_or_else(|| panic!("[ERROR] No initial balance for account {:?}", account))
     }
 
     pub fn read(&self, acc: Account) -> Money {
@@ -75,7 +83,7 @@ impl Bank {
         let balance = self.balance(from);
         if balance < amount {
             println!(
-                "Not enough money in {} account to transfer {} to {}. (balance: {})",
+                "Not enough money in {:?} account to transfer {:?} to {:?}. (balance: {:?})",
                 from, amount, to, balance
             );
             None
@@ -102,7 +110,7 @@ impl Bank {
             false
         } else if balance_of_sender < op.amount {
             println!(
-                "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
+                "[INVALID] balance of sending proc is not sufficient for transfer: {:?} < {:?}",
                 balance_of_sender, op.amount
             );
 
@@ -128,12 +136,16 @@ impl Bank {
         self.hist.entry(op.to).or_default().insert(op.clone());
 
         if op.from == self.id {
-            // In the paper, they clear the deps after the broadcast completes in
+            // In the paper, deps are cleared after the broadcast completes in
             // self.transfer.
             // Here we break up the initiation of the transfer from the completion.
             // We move the clearing of the deps here since this is where we now know
             // the transfer was successfully validated and applied by the network.
-            self.deps.clear();
+            for op in op.deps.iter() {
+                // for each dependency listed in the transfer
+                // we remove it from the set of dependencies for a transfer
+                self.deps.remove(op);
+            }
         }
     }
 }
