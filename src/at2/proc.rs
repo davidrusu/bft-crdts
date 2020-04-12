@@ -57,7 +57,6 @@ impl Proc {
     }
 
     pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Msg> {
-        assert_eq!(from, self.id);
         self.bank.transfer(from, to, amount).map(|transfer_op| Msg {
             op: transfer_op,
             source_version: self.seq.inc(from),
