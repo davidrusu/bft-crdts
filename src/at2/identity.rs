@@ -1,10 +1,12 @@
 use std::cmp::Ordering;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use ed25519_dalek::PublicKey;
+use hex;
 use serde::Serialize;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
 pub struct Identity(pub PublicKey);
 
 impl Hash for Identity {
@@ -22,5 +24,24 @@ impl PartialOrd for Identity {
 impl Ord for Identity {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(&other).unwrap()
+    }
+}
+
+impl fmt::Display for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0.as_bytes();
+        let visible = 1;
+        write!(
+            f,
+            "ID:{}..{}",
+            hex::encode(&bytes[..visible]),
+            hex::encode(&bytes[bytes.len() - visible..bytes.len()])
+        )
+    }
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
     }
 }

@@ -4,13 +4,15 @@ use serde::Serialize;
 
 use crate::at2::identity::Identity;
 
-pub type Account = Identity; // In the paper, Identity and Account are synonymous
-pub type Money = i64;
+// TODO: introduce decomp. of Account from Identity
+// pub type Account = Identity; // In the paper, Identity and Account are synonymous
+
+pub type Money = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Transfer {
-    pub from: Account,
-    pub to: Account,
+    pub from: Identity,
+    pub to: Identity,
     pub amount: Money,
 
     /// set of transactions that need to be applied before this transfer can be validated
@@ -22,11 +24,11 @@ pub struct Transfer {
 pub struct Bank {
     id: Identity,
 
-    // When a new account is opened, it will be given an initial balance
-    initial_balances: HashMap<Account, Money>,
+    // When a new identity is created, it will be given an initial balance
+    initial_balances: HashMap<Identity, Money>,
 
-    // Set of all transfers impacting a given account
-    hist: HashMap<Account, BTreeSet<Transfer>>,
+    // Set of all transfers impacting a given identity
+    hist: HashMap<Identity, BTreeSet<Transfer>>,
 
     // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,
@@ -42,48 +44,55 @@ impl Bank {
         }
     }
 
-    pub fn onboard_account(&mut self, account: Account, initial_balance: Money) {
-        self.initial_balances.insert(account, initial_balance);
+    pub fn onboard_identity(&mut self, identity: Identity, initial_balance: Money) {
+        self.initial_balances.insert(identity, initial_balance);
     }
 
-    pub fn initial_balance(&self, account: Account) -> Money {
+    pub fn initial_balance(&self, identity: Identity) -> Money {
         self.initial_balances
-            .get(&account)
+            .get(&identity)
             .cloned()
-            .unwrap_or_else(|| panic!("[ERROR] No initial balance for account {:?}", account))
+            .unwrap_or_else(|| panic!("[ERROR] No initial balance for {}", identity))
     }
 
-    pub fn read(&self, acc: Account) -> Money {
-        self.balance(acc)
-    }
-
-    fn balance(&self, acc: Account) -> Money {
-        // TODO: in the paper, when we read from an account, we union the account
+    pub fn balance(&self, identity: Identity) -> Money {
+        // TODO: in the paper, when we read from an identity, we union the identity
         //       history with the deps, I don't see a use for this since anything
-        //       in deps is already in the account history. Think this through a
+        //       in deps is already in the identity history. Think this through a
         //       bit more carefully.
-        let h = self.history(acc);
+        let h = self.history(identity);
 
-        let outgoing: Money = h.iter().filter(|t| t.from == acc).map(|t| t.amount).sum();
-        let incoming: Money = h.iter().filter(|t| t.to == acc).map(|t| t.amount).sum();
+        let outgoing: Money = h
+            .iter()
+            .filter(|t| t.from == identity)
+            .map(|t| t.amount)
+            .sum();
+        let incoming: Money = h
+            .iter()
+            .filter(|t| t.to == identity)
+            .map(|t| t.amount)
+            .sum();
 
-        let balance_delta = incoming - outgoing;
-        let balance = self.initial_balance(acc) + balance_delta;
+        // We compute differences in a larger space since we need to move to signed numbers
+        // and hence we lose a bit.
+        let balance_delta: i128 = (incoming as i128) - (outgoing as i128);
+        let balance: i128 = self.initial_balance(identity) as i128 + balance_delta;
 
-        assert!(balance >= 0);
+        assert!(balance >= 0); // sanity check that we haven't violated our balance constraint
+        assert!(balance <= Money::max_value() as i128); // sanity check that it's safe to downcast
 
-        balance
+        balance as Money
     }
 
-    fn history(&self, account: Account) -> BTreeSet<Transfer> {
-        self.hist.get(&account).cloned().unwrap_or_default()
+    fn history(&self, identity: Identity) -> BTreeSet<Transfer> {
+        self.hist.get(&identity).cloned().unwrap_or_default()
     }
 
-    pub fn transfer(&self, from: Account, to: Account, amount: Money) -> Option<Transfer> {
+    pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Transfer> {
         let balance = self.balance(from);
         if balance < amount {
             println!(
-                "Not enough money in {:?} account to transfer {:?} to {:?}. (balance: {:?})",
+                "{} does not have enough money to transfer {} to {}. (balance: {})",
                 from, amount, to, balance
             );
             None
@@ -100,17 +109,17 @@ impl Bank {
 
     /// Protection against Byzantines
     pub fn validate(&self, source_proc: Identity, op: &Transfer) -> bool {
-        let balance_of_sender = self.read(op.from);
+        let balance_of_sender = self.balance(op.from);
 
         if op.from != source_proc {
             println!(
-                "[INVALID] Transfer from {:?} was was initiated by a proc that does not own this account: {:?}",
+                "[INVALID] {} initiated a transfer on behalf of another proc: {}",
                 source_proc, op.from
             );
             false
         } else if balance_of_sender < op.amount {
             println!(
-                "[INVALID] balance of sending proc is not sufficient for transfer: {:?} < {:?}",
+                "[INVALID] balance of sending proc is not sufficient for transfer: {} < {}",
                 balance_of_sender, op.amount
             );
 

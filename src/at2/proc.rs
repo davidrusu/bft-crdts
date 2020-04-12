@@ -10,7 +10,7 @@ use std::mem;
 use crdts::{CmRDT, Dot, VClock};
 use serde::Serialize;
 
-use crate::at2::bank::{Account, Bank, Money, Transfer};
+use crate::at2::bank::{Bank, Money, Transfer};
 use crate::at2::identity::Identity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
@@ -41,19 +41,19 @@ pub struct Proc {
 }
 
 impl Proc {
-    pub fn new(id: Identity, initial_balance: Money) -> Self {
-        let mut proc = Proc {
+    pub fn new(id: Identity) -> Self {
+        Proc {
             id,
             bank: Bank::new(id),
             seq: VClock::new(),
             rec: VClock::new(),
             to_validate: Vec::new(),
             peers: HashSet::new(),
-        };
+        }
+    }
 
-        proc.bank.onboard_account(id, initial_balance);
-
-        proc
+    pub fn onboard_identity(&mut self, identity: Identity, initial_balance: Money) {
+        self.bank.onboard_identity(identity, initial_balance);
     }
 
     pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Msg> {
@@ -64,8 +64,8 @@ impl Proc {
         })
     }
 
-    pub fn read(&self, account: Account) -> Money {
-        self.bank.read(account)
+    pub fn balance(&self, identity: Identity) -> Money {
+        self.bank.balance(identity)
     }
 
     /// Executed when we successfully deliver messages to process p
@@ -76,14 +76,14 @@ impl Proc {
         // Secure broadcast callback
         if msg.source_version == self.rec.inc(from) {
             println!(
-                "{:?} Accepted message from {:?} and enqueued for validation",
+                "{} accepted message from {} and enqueued for validation",
                 self.id, from
             );
             self.rec.apply(msg.source_version);
             self.to_validate.push((from, msg));
         } else {
             println!(
-                "{:?} Rejected message from {:?}, transfer source version is invalid: {:?}",
+                "{} Rejected message from {}, transfer source version is invalid: {:?}",
                 self.id, from, msg.source_version
             );
         }

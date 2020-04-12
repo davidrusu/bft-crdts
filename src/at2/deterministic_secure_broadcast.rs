@@ -45,15 +45,21 @@ pub struct SignedEnvelope {
 }
 
 impl SecureBroadcastProc {
-    pub fn new_with_balance(initial_balance: Money) -> Self {
+    pub fn new() -> Self {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
         let identity = Identity(keypair.public);
         Self {
             keypair: keypair,
-            proc: Proc::new(identity, initial_balance),
+            proc: Proc::new(identity),
             peers: HashSet::new(),
             msgs_waiting_for_signatures: HashMap::new(),
+        }
+    }
+
+    pub fn update_peer_list(&mut self, peers_with_balances: &HashMap<Identity, Money>) {
+        for (peer, balance) in peers_with_balances.iter() {
+            self.proc.onboard_identity(*peer, *balance);
         }
     }
 

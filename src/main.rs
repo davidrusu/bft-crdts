@@ -1,3 +1,5 @@
+#![feature(vec_remove_item)]
+
 use crdts::quickcheck::{Arbitrary, Gen};
 use crdts::{orswot, CmRDT, CvRDT, Dot, VClock};
 use std::cmp::{Ordering, PartialOrd};
