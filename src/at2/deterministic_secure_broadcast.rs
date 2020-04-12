@@ -6,7 +6,8 @@ use crate::at2::identity::{Identity, Sig};
 use crate::at2::proc::{Msg, Proc};
 
 use bincode;
-use ed25519_dalek::{Keypair, Signature};
+use crdts::{CmRDT, VClock};
+use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
 use serde::Serialize;
 use sha2::Sha512;
@@ -16,9 +17,8 @@ pub struct SecureBroadcastProc {
     keypair: Keypair,
     proc: Proc,
     peers: HashSet<Identity>,
-    // delivered: VClock<Identity>,
-    // received: VClock<Identity>, // TODO
-    // to_validate: Vec<(Identity, Msg)>,
+    delivered: VClock<Identity>,
+    received: VClock<Identity>,
     msgs_waiting_for_signatures: HashMap<Msg, HashMap<Identity, Sig>>,
 }
 
@@ -54,6 +54,8 @@ impl SecureBroadcastProc {
             keypair: keypair,
             proc: Proc::new(identity),
             peers: HashSet::new(),
+            delivered: VClock::new(),
+            received: VClock::new(),
             msgs_waiting_for_signatures: HashMap::new(),
         }
     }
@@ -89,21 +91,29 @@ impl SecureBroadcastProc {
     }
 
     pub fn handle_packet(&mut self, packet: Packet) -> Vec<Packet> {
-        println!("[DSB] {} handling packet {:?}", self.identity(), packet);
+        println!(
+            "[DSB] {} handling packet from {}",
+            self.identity(),
+            packet.source
+        );
         if self.verify_source(packet.source, &packet.msg, packet.sig) {
             match packet.msg {
                 SecureBroadcastMsg::RequestValidation { msg } => {
-                    if self.proc.validate(packet.source, &msg) {
+                    if self.received.dot(packet.source).inc() == msg.source_version
+                        && self.proc.validate(packet.source, &msg)
+                    {
+                        self.received.apply(msg.source_version);
+
                         let msg_sig = self.sign(&msg);
                         let validation_msg =
                             SecureBroadcastMsg::SignedValidated { msg, sig: msg_sig };
 
-                        let envelope_sig = self.sign(&validation_msg);
+                        let packet_sig = self.sign(&validation_msg);
                         vec![Packet {
                             source: self.identity(),
                             dest: packet.source,
                             msg: validation_msg,
-                            sig: envelope_sig,
+                            sig: packet_sig,
                         }]
                     } else {
                         println!("[DSB] Dropping invalid msg {:?}", msg);
@@ -145,15 +155,21 @@ impl SecureBroadcastProc {
                     }
                 }
                 SecureBroadcastMsg::ProofOfAgreement { msg, proof } => {
-                    assert!(proof.len() * 3 >= self.peers.len() * 2);
+                    if self.delivered.inc(packet.source) == msg.source_version {
+                        assert!(proof.len() * 3 >= self.peers.len() * 2);
 
-                    for (proof_source, sig) in proof {
-                        assert!(self.peers.contains(&proof_source));
-                        assert!(self.verify_source(proof_source, &msg, sig));
+                        for (proof_source, sig) in proof {
+                            assert!(self.peers.contains(&proof_source));
+                            assert!(self.verify_source(proof_source, &msg, sig));
+                        }
+
+                        self.delivered.apply(msg.source_version);
+                        self.proc.on_validated(packet.source, msg);
+                        vec![]
+                    } else {
+                        println!("[DSB] Dropping out of order packer from {}", packet.source);
+                        vec![]
                     }
-
-                    self.proc.on_validated(packet.source, msg);
-                    vec![]
                 }
             }
         } else {

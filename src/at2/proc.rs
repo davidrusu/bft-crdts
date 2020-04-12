@@ -5,7 +5,6 @@
 /// 3.  TODO: we genaralize over the distributed algorithm
 /// 4.  TODO: seperate out resources from identity (a process id both identified an agent and an account) we generalize this so that
 use std::collections::HashSet;
-use std::mem;
 
 use crdts::{CmRDT, Dot, VClock};
 use serde::Serialize;
@@ -16,7 +15,7 @@ use crate::at2::identity::Identity;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 pub struct Msg {
     op: Transfer,
-    source_version: Dot<Identity>,
+    pub source_version: Dot<Identity>, // Consider moving this into the DSP layer
 }
 
 #[derive(Debug)]
@@ -29,9 +28,6 @@ pub struct Proc {
 
     // Applied versions
     seq: VClock<Identity>,
-
-    // Received but not necessarily applied versions
-    rec: VClock<Identity>,
 
     // Set of delivered (but not validated) transfers
     to_validate: Vec<(Identity, Msg)>,
@@ -46,7 +42,6 @@ impl Proc {
             id,
             bank: Bank::new(id),
             seq: VClock::new(),
-            rec: VClock::new(),
             to_validate: Vec::new(),
             peers: HashSet::new(),
         }
@@ -65,27 +60,6 @@ impl Proc {
 
     pub fn balance(&self, identity: Identity) -> Money {
         self.bank.balance(identity)
-    }
-
-    /// Executed when we successfully deliver messages to process p
-    pub fn on_delivery(&mut self, from: Identity, msg: Msg) {
-        // TODO: this is no longer being executed
-        assert_eq!(from, msg.source_version.actor);
-
-        // Secure broadcast callback
-        if msg.source_version == self.rec.inc(from) {
-            println!(
-                "{} accepted message from {} and enqueued for validation",
-                self.id, from
-            );
-            self.rec.apply(msg.source_version);
-            self.to_validate.push((from, msg));
-        } else {
-            println!(
-                "{} Rejected message from {}, transfer source version is invalid: {:?}",
-                self.id, from, msg.source_version
-            );
-        }
     }
 
     /// Executed when a transfer from `from` becomes valid.
@@ -111,29 +85,13 @@ impl Proc {
             false
         } else if msg.source_version != self.seq.inc(from) {
             println!(
-                "[INVALID] Source version {:?} is not a direct successor of last transfer from {:?}: {:?}",
-                msg.source_version, from, self.seq.dot(from)
+                "[INVALID] {} Source version {:?} is not a direct successor of last transfer from {}: {:?}",
+                self.id, msg.source_version, from, self.seq.dot(from)
             );
             false
         } else {
             // Finally, check with the underlying algorithm
             self.bank.validate(from, &msg.op)
-        }
-    }
-
-    pub fn handle_msg(&mut self, from: Identity, msg: Msg) {
-        self.on_delivery(from, msg);
-        self.process_msg_queue();
-    }
-
-    pub fn process_msg_queue(&mut self) {
-        let to_validate = mem::replace(&mut self.to_validate, Vec::new());
-        for (to, msg) in to_validate {
-            if self.validate(to, &msg) {
-                self.on_validated(to, msg);
-            } else {
-                println!("[DROP] invalid message detected {:?}", (to, msg));
-            }
         }
     }
 }

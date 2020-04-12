@@ -30,13 +30,7 @@ impl Ord for Identity {
 impl fmt::Display for Identity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.as_bytes();
-        let visible = 1;
-        write!(
-            f,
-            "ID:{}..{}",
-            hex::encode(&bytes[..visible]),
-            hex::encode(&bytes[bytes.len() - visible..bytes.len()])
-        )
+        write!(f, "id:{}..", hex::encode(&bytes[..2]))
     }
 }
 
@@ -58,13 +52,7 @@ impl Hash for Sig {
 impl fmt::Display for Sig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.to_bytes();
-        let visible = 1;
-        write!(
-            f,
-            "Sig:{}..{}",
-            hex::encode(&bytes[..visible]),
-            hex::encode(&bytes[bytes.len() - visible..bytes.len()])
-        )
+        write!(f, "sig:{}..", hex::encode(&bytes[..2]))
     }
 }
 
