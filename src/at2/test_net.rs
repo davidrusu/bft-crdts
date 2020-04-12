@@ -230,6 +230,7 @@ mod tests {
                 for packet in new_packets {
                     let packet_position = packet_interleave[packet_number % packet_interleave.len()] % packet_queue.len().max(1);
                     packet_queue.insert(packet_position, packet);
+                    packet_number += 1;
                 }
             }
 
