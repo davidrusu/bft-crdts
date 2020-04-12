@@ -240,41 +240,12 @@ mod tests {
         //            assert_eq!(net.read_balance_from_perspective_of_proc(54, 54), 0);
         //        }
         //
-        //        #[test]
-        //        fn test_causal_dependancy() {
-        //            let mut net = Net::default();
-        //
-        //            net.add_proc(32, 1000);
-        //            net.add_proc(91, 1000);
-        //            net.add_proc(54, 1000);
-        //            net.add_proc(16, 1000);
-        //
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(32, 32), 1000);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(91, 91), 1000);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(54, 54), 1000);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(16, 16), 1000);
-        //
-        //            // T0:  32 -> 91
-        //            net.transfer(32, 32, 91, 500);
-        //
-        //            // T1: 32 -> 54
-        //            net.transfer(32, 32, 54, 500);
-        //
-        //            // T2: 91 -> 16
-        //            net.transfer(91, 91, 16, 1500);
-        //
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(32, 32), 0);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(91, 91), 0);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(54, 54), 1500);
-        //            assert_eq!(net.read_balance_from_perspective_of_proc(16, 16), 2500);
-        //        }
     }
 
     #[test]
     fn test_transfer_is_actually_moving_money_qc1() {
         let mut net = Net::new(&[0, 9]);
 
-        let identities: Vec<Identity> = net.identities().into_iter().collect();
         let initiator = net.find_identity_with_balance(9).unwrap();
         let from = initiator;
         let to = net.find_identity_with_balance(0).unwrap();
@@ -302,5 +273,46 @@ mod tests {
 
         assert_eq!(from_balance_abs_delta, amount);
         assert_eq!(from_balance_abs_delta, to_balance_abs_delta);
+    }
+
+    #[test]
+    fn test_causal_dependancy() {
+        let mut net = Net::new(&[1000, 1000, 1000, 1000]);
+
+        let identities: Vec<_> = net.identities().into_iter().collect();
+        let a = identities[0];
+        let b = identities[1];
+        let c = identities[2];
+        let d = identities[3];
+
+        let mut packets = Vec::new();
+        // T0:  a -> b
+        packets.extend(net.transfer(a, a, b, 500));
+
+        while let Some(packet) = packets.pop() {
+            packets.extend(net.deliver_packet(packet));
+        }
+        assert!(net.everyone_is_in_agreement());
+
+        // T1: a -> c
+        packets.extend(net.transfer(a, a, c, 500));
+
+        while let Some(packet) = packets.pop() {
+            packets.extend(net.deliver_packet(packet));
+        }
+        assert!(net.everyone_is_in_agreement());
+
+        // T2: b -> d
+        packets.extend(net.transfer(b, b, d, 1500));
+
+        while let Some(packet) = packets.pop() {
+            packets.extend(net.deliver_packet(packet));
+        }
+        assert!(net.everyone_is_in_agreement());
+
+        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(2500));
     }
 }
