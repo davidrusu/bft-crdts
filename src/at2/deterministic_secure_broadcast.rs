@@ -150,32 +150,26 @@ impl SecureBroadcastProc {
                 (self.bank.validate(from, &msg.op), "failed bank validation"),
             ],
             Payload::SignedValidated { msg, sig } => vec![
-                (
-                    self.verify_sig(&from, &msg, sig),
-                    "failed signature verification",
-                ),
-                (
-                    self.identity() == msg.dot.actor,
-                    "we didn't request this validation",
-                ),
+                (self.verify_sig(&from, &msg, sig), "failed sig verification"),
+                (self.identity() == msg.dot.actor, "validation not requested"),
             ],
             Payload::ProofOfAgreement { msg, proof } => vec![
                 (
                     self.delivered.inc(from) == msg.dot,
-                    "We've either already delivered this msg, or it is out of order",
+                    "either already delivered or out of order msg",
                 ),
                 (self.quorum(proof.len()), "not enough signatures for quorum"),
                 (
                     proof
                         .iter()
                         .all(|(signatory, _sig)| self.peers.contains(&signatory)),
-                    "proof contains signatures from unknown peer",
+                    "proof contains signature(s) from unknown peer(s)",
                 ),
                 (
                     proof
                         .iter()
                         .all(|(signatory, sig)| self.verify_sig(signatory, &msg, &sig)),
-                    "proof contains invalid signatures",
+                    "proof contains invalid signature(s)",
                 ),
             ],
         };
