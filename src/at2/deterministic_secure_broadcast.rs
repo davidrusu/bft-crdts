@@ -18,35 +18,35 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     peers: HashSet<Identity>,
     delivered: VClock<Identity>,
     received: VClock<Identity>,
-    msgs_waiting_for_signatures: HashMap<Msg<A>, HashMap<Identity, Sig>>,
+    msgs_waiting_for_signatures: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Packet<A: SecureBroadcastAlgorithm> {
+pub struct Packet<Op> {
     pub source: Identity,
     pub dest: Identity,
-    pub payload: Payload<A>,
+    pub payload: Payload<Op>,
     pub sig: Sig,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub enum Payload<A: SecureBroadcastAlgorithm> {
+pub enum Payload<Op> {
     RequestValidation {
-        msg: Msg<A>,
+        msg: Msg<Op>,
     },
     SignedValidated {
-        msg: Msg<A>,
+        msg: Msg<Op>,
         sig: Sig,
     },
     ProofOfAgreement {
-        msg: Msg<A>,
+        msg: Msg<Op>,
         proof: HashMap<Identity, Sig>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
-pub struct Msg<A: SecureBroadcastAlgorithm> {
-    op: A::Op,
+pub struct Msg<Op> {
+    op: Op,
     dot: Dot<Identity>,
 }
 
@@ -84,7 +84,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         Identity(self.keypair.public)
     }
 
-    pub fn exec_bft_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Vec<Packet<A>> {
+    pub fn exec_bft_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Vec<Packet<A::Op>> {
         if let Some(op) = f(&self.algo) {
             let msg = Msg {
                 op,
@@ -103,7 +103,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         f(&self.algo)
     }
 
-    pub fn handle_packet(&mut self, packet: Packet<A>) -> Vec<Packet<A>> {
+    pub fn handle_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         println!(
             "[DSB] handling packet from {}->{}",
             packet.source,
@@ -163,7 +163,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn validate_payload(&self, from: Identity, payload: &Payload<A>) -> bool {
+    fn validate_payload(&self, from: Identity, payload: &Payload<A::Op>) -> bool {
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
@@ -209,7 +209,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         n >= self.peers.len()
     }
 
-    fn broadcast(&self, msg: Payload<A>) -> Vec<Packet<A>> {
+    fn broadcast(&self, msg: Payload<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers);
         self.peers
             .iter()
@@ -217,7 +217,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .collect()
     }
 
-    fn send(&self, dest: Identity, payload: Payload<A>) -> Packet<A> {
+    fn send(&self, dest: Identity, payload: Payload<A::Op>) -> Packet<A::Op> {
         let sig = self.sign(&payload);
         Packet {
             source: self.identity(),

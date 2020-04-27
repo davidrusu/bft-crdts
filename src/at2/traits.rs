@@ -2,9 +2,7 @@ use crate::at2::identity::Identity;
 
 use serde::Serialize;
 
-pub trait SecureBroadcastAlgorithm:
-    Serialize + Clone + std::fmt::Debug + std::hash::Hash + std::cmp::Eq
-{
+pub trait SecureBroadcastAlgorithm: Clone + std::fmt::Debug {
     type Op: Serialize + Clone + std::fmt::Debug + std::hash::Hash + std::cmp::Eq;
 
     /// initialize a new replica of this algorithm

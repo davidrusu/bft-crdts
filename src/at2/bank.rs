@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
@@ -27,15 +27,15 @@ struct Transfer {
     deps: BTreeSet<Transfer>,
 }
 
-#[derive(Debug, Clone, Serialize, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Bank {
     id: Identity,
 
     // When a new identity is created, it will be given an initial balance
-    initial_balances: BTreeMap<Identity, Money>,
+    initial_balances: HashMap<Identity, Money>,
 
     // Set of all transfers impacting a given identity
-    hist: BTreeMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
+    hist: HashMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
 
     // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,

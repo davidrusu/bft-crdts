@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::at2::bank::{Bank, Money};
+use crate::at2::bank::{Bank, Money, Op};
 use crate::at2::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
 use crate::at2::identity::Identity;
 
@@ -51,7 +51,7 @@ impl Net {
         initiating_proc: Identity,
         bank_owner: Identity,
         initial_balance: Money,
-    ) -> Vec<Packet<Bank>> {
+    ) -> Vec<Packet<Op>> {
         self.procs
             .iter()
             .find(|p| p.identity() == initiating_proc)
@@ -65,7 +65,7 @@ impl Net {
         from: Identity,
         to: Identity,
         amount: Money,
-    ) -> Vec<Packet<Bank>> {
+    ) -> Vec<Packet<Op>> {
         self.procs
             .iter()
             .find(|p| p.identity() == initiating_proc)
@@ -73,7 +73,7 @@ impl Net {
             .exec_bft_op(|p| p.transfer(from, to, amount))
     }
 
-    fn deliver_packet(&mut self, packet: Packet<Bank>) -> Vec<Packet<Bank>> {
+    fn deliver_packet(&mut self, packet: Packet<Op>) -> Vec<Packet<Op>> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.procs
             .iter_mut()
@@ -254,7 +254,7 @@ mod tests {
             let mut second_broadcast_packets = net.transfer(a, a, c, a_init_balance);
 
             let mut packet_number = 0;
-            let mut packet_queue: Vec<Packet<Bank>> = Vec::new();
+            let mut packet_queue: Vec<Packet<Op>> = Vec::new();
 
             // Interleave the initial broadcast packets
             while first_broadcast_packets.len() > 0 || second_broadcast_packets.len() > 0 {
@@ -421,7 +421,7 @@ mod tests {
         let b_init_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
         let c_init_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
 
-        let mut packet_queue: Vec<Packet<Bank>> = Vec::new();
+        let mut packet_queue: Vec<Packet<Op>> = Vec::new();
         packet_queue.extend(net.transfer(a, a, b, a_init_balance));
         packet_queue.extend(net.transfer(a, a, c, a_init_balance));
 
@@ -472,7 +472,7 @@ mod tests {
         let mut second_broadcast_packets = net.transfer(a, a, c, 1);
 
         let mut packet_number = 0;
-        let mut packet_queue: Vec<Packet<Bank>> = Vec::new();
+        let mut packet_queue: Vec<Packet<Op>> = Vec::new();
         let packet_interleave = vec![0, 0, 15, 9, 67, 99];
 
         // Interleave the initial broadcast packets
