@@ -103,80 +103,37 @@ impl SecureBroadcastProc {
             self.identity(),
             packet.source
         );
-        if self.verify_source(packet.source, &packet.payload, &packet.sig) {
+        if self.verify_source(&packet.source, &packet.payload, &packet.sig)
+            && self.validate_payload(packet.source, &packet.payload)
+        {
             match packet.payload {
                 SecureBroadcastPayload::RequestValidation { msg } => {
-                    if self.validate_msg(packet.source, &msg) {
-                        self.received.apply(msg.dot);
+                    self.received.apply(msg.dot);
 
-                        let msg_sig = self.sign(&msg);
-                        let validation =
-                            SecureBroadcastPayload::SignedValidated { msg, sig: msg_sig };
-
-                        let packet_sig = self.sign(&validation);
-                        vec![Packet {
-                            source: self.identity(),
-                            dest: packet.source,
-                            payload: validation,
-                            sig: packet_sig,
-                        }]
-                    } else {
-                        println!("[DSB] Dropping invalid msg {:?}", msg);
-                        vec![]
-                    }
+                    let msg_sig = self.sign(&msg);
+                    let validation = SecureBroadcastPayload::SignedValidated { msg, sig: msg_sig };
+                    vec![self.send(packet.source, validation)]
                 }
                 SecureBroadcastPayload::SignedValidated { msg, sig } => {
-                    // Ensure we are actually the source of this msg.
-                    // assert_eq!(msg.dot.actor, self.keypair.public);
-                    if self.verify_source(packet.source, &msg, &sig) {
-                        self.msgs_waiting_for_signatures
-                            .entry(msg.clone())
-                            .or_default()
-                            .insert(packet.source, sig);
+                    self.msgs_waiting_for_signatures
+                        .entry(msg.clone())
+                        .or_default()
+                        .insert(packet.source, sig);
 
-                        let num_signatures = self
-                            .msgs_waiting_for_signatures
-                            .get(&msg)
-                            .map(|sigs| sigs.len())
-                            .unwrap(); // we just inserted this sig so we should have at least 1
+                    let num_signatures = self.msgs_waiting_for_signatures[&msg].len();
 
-                        if self.quorum(num_signatures) {
-                            let proof = self
-                                .msgs_waiting_for_signatures
-                                .get(&msg)
-                                .cloned()
-                                .unwrap_or_default();
-
-                            // We have quorum, broadcast proof of agreement to network
-                            self.broadcast(SecureBroadcastPayload::ProofOfAgreement {
-                                msg: msg,
-                                proof,
-                            })
-                        } else {
-                            // We don't yet have quorum, wait for more signatures
-                            vec![]
-                        }
+                    if self.quorum(num_signatures) {
+                        // We have quorum, broadcast proof of agreement to network
+                        let proof = self.msgs_waiting_for_signatures[&msg].clone();
+                        self.broadcast(SecureBroadcastPayload::ProofOfAgreement { msg: msg, proof })
                     } else {
-                        println!("[DSB] Invalid signature on validation");
                         vec![]
                     }
                 }
                 SecureBroadcastPayload::ProofOfAgreement { msg, proof } => {
-                    if self.delivered.inc(packet.source) == msg.dot {
-                        assert!(self.quorum(proof.len()));
-
-                        for (proof_source, sig) in proof {
-                            assert!(self.peers.contains(&proof_source));
-                            assert!(self.verify_source(proof_source, &msg, &sig));
-                        }
-
-                        self.delivered.apply(msg.dot);
-                        self.bank.apply(msg.op);
-                        vec![]
-                    } else {
-                        println!("[DSB] Dropping out of order packer from {}", packet.source);
-                        vec![]
-                    }
+                    self.delivered.apply(msg.dot);
+                    self.bank.apply(msg.op);
+                    vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
                 }
             }
         } else {
@@ -185,24 +142,54 @@ impl SecureBroadcastProc {
         }
     }
 
-    fn broadcast(&self, msg: SecureBroadcastMsg) -> Vec<Packet> {
-
-    fn validate_msg(&self, from: Identity, msg: &Msg) -> bool {
-        if from != msg.dot.actor {
-            println!(
-                "[INVALID] Transfer from {:?} does not match the msg source version {:?}",
-                from, msg.dot
-            );
-            false
-        } else if msg.dot != self.received.inc(from) {
-            println!(
-                "[INVALID] {} Source version {:?} is not a direct successor of last transfer from {}: {:?}",
-                self.identity(), msg.dot, from, self.received.dot(from)
-            );
-            false
-        } else {
-            // Finally, check with the underlying algorithm
-            self.bank.validate(from, &msg.op)
+    fn validate_payload(&self, from: Identity, payload: &SecureBroadcastPayload) -> bool {
+        match payload {
+            SecureBroadcastPayload::RequestValidation { msg } => vec![
+                (from == msg.dot.actor, "source does not match the msg dot"),
+                (msg.dot == self.received.inc(from), "not the next msg"),
+                (self.bank.validate(from, &msg.op), "failed bank validation"),
+            ]
+            .into_iter()
+            .find(|(is_valid, _msg)| !is_valid)
+            .map(|(_test, msg)| println!("[INVALID] {}", msg))
+            .is_none(),
+            SecureBroadcastPayload::SignedValidated { msg, sig } => vec![
+                (
+                    self.identity() == msg.dot.actor,
+                    "we didn't request this validation",
+                ),
+                (
+                    self.verify_source(&from, &msg, sig),
+                    "failed signature verification",
+                ),
+            ]
+            .into_iter()
+            .find(|(is_valid, _msg)| !is_valid)
+            .map(|(_test, validation_msg)| println!("[INVALID] {}", validation_msg))
+            .is_none(),
+            SecureBroadcastPayload::ProofOfAgreement { msg, proof } => vec![
+                (
+                    self.delivered.inc(from) == msg.dot,
+                    "We've either already delivered this msg, or it is out of order",
+                ),
+                (self.quorum(proof.len()), "not enough signatures for quorum"),
+                (
+                    proof
+                        .iter()
+                        .all(|(signatory, _sig)| self.peers.contains(&signatory)),
+                    "proof contains signatures from unknown peer",
+                ),
+                (
+                    proof
+                        .iter()
+                        .all(|(signatory, sig)| self.verify_source(signatory, &msg, &sig)),
+                    "proof contains invalid signatures",
+                ),
+            ]
+            .into_iter()
+            .find(|(is_valid, _msg)| !is_valid)
+            .map(|(_test, validation_msg)| println!("[INVALID] {}", validation_msg))
+            .is_none(),
         }
     }
 
@@ -235,7 +222,7 @@ impl SecureBroadcastProc {
         Sig(msg_sig)
     }
 
-    fn verify_source(&self, source: Identity, msg: impl Serialize, sig: &Sig) -> bool {
+    fn verify_source(&self, source: &Identity, msg: impl Serialize, sig: &Sig) -> bool {
         let msg_bytes = bincode::serialize(&msg).expect("Failed to serialize");
         source.0.verify::<Sha512>(&msg_bytes, &sig.0).is_ok()
     }
