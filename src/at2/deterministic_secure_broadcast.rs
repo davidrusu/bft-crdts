@@ -130,7 +130,7 @@ impl SecureBroadcastProc {
                         vec![]
                     }
                 }
-                SecureBroadcastPayload::ProofOfAgreement { msg, proof } => {
+                SecureBroadcastPayload::ProofOfAgreement { msg, .. } => {
                     self.delivered.apply(msg.dot);
                     self.bank.apply(msg.op);
                     vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
@@ -143,30 +143,22 @@ impl SecureBroadcastProc {
     }
 
     fn validate_payload(&self, from: Identity, payload: &SecureBroadcastPayload) -> bool {
-        match payload {
+        let validation_tests = match payload {
             SecureBroadcastPayload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
                 (msg.dot == self.received.inc(from), "not the next msg"),
                 (self.bank.validate(from, &msg.op), "failed bank validation"),
-            ]
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[INVALID] {}", msg))
-            .is_none(),
+            ],
             SecureBroadcastPayload::SignedValidated { msg, sig } => vec![
-                (
-                    self.identity() == msg.dot.actor,
-                    "we didn't request this validation",
-                ),
                 (
                     self.verify_source(&from, &msg, sig),
                     "failed signature verification",
                 ),
-            ]
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, validation_msg)| println!("[INVALID] {}", validation_msg))
-            .is_none(),
+                (
+                    self.identity() == msg.dot.actor,
+                    "we didn't request this validation",
+                ),
+            ],
             SecureBroadcastPayload::ProofOfAgreement { msg, proof } => vec![
                 (
                     self.delivered.inc(from) == msg.dot,
@@ -185,12 +177,14 @@ impl SecureBroadcastProc {
                         .all(|(signatory, sig)| self.verify_source(signatory, &msg, &sig)),
                     "proof contains invalid signatures",
                 ),
-            ]
+            ],
+        };
+
+        validation_tests
             .into_iter()
             .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, validation_msg)| println!("[INVALID] {}", validation_msg))
-            .is_none(),
-        }
+            .map(|(_test, msg)| println!("[INVALID] {}", msg))
+            .is_none()
     }
 
     fn quorum(&self, n: usize) -> bool {
