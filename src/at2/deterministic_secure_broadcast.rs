@@ -22,7 +22,7 @@ pub struct SecureBroadcastProc {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub enum SecureBroadcastPayload {
+pub enum Payload {
     RequestValidation {
         msg: Msg,
     },
@@ -46,7 +46,7 @@ pub struct Msg {
 pub struct Packet {
     pub source: Identity,
     pub dest: Identity,
-    pub payload: SecureBroadcastPayload,
+    pub payload: Payload,
     pub sig: Sig,
 }
 
@@ -80,7 +80,7 @@ impl SecureBroadcastProc {
         if let Some(op) = f(&self.bank) {
             println!("[DSB] bft op created, broadcasting request for validation");
 
-            let validation_request = SecureBroadcastPayload::RequestValidation {
+            let validation_request = Payload::RequestValidation {
                 msg: Msg {
                     op,
                     dot: self.received.inc(self.identity()),
@@ -103,18 +103,18 @@ impl SecureBroadcastProc {
             self.identity(),
             packet.source
         );
-        if self.verify_source(&packet.source, &packet.payload, &packet.sig)
+        if self.verify_sig(&packet.source, &packet.payload, &packet.sig)
             && self.validate_payload(packet.source, &packet.payload)
         {
             match packet.payload {
-                SecureBroadcastPayload::RequestValidation { msg } => {
+                Payload::RequestValidation { msg } => {
                     self.received.apply(msg.dot);
 
                     let msg_sig = self.sign(&msg);
-                    let validation = SecureBroadcastPayload::SignedValidated { msg, sig: msg_sig };
+                    let validation = Payload::SignedValidated { msg, sig: msg_sig };
                     vec![self.send(packet.source, validation)]
                 }
-                SecureBroadcastPayload::SignedValidated { msg, sig } => {
+                Payload::SignedValidated { msg, sig } => {
                     self.msgs_waiting_for_signatures
                         .entry(msg.clone())
                         .or_default()
@@ -125,12 +125,12 @@ impl SecureBroadcastProc {
                     if self.quorum(num_signatures) {
                         // We have quorum, broadcast proof of agreement to network
                         let proof = self.msgs_waiting_for_signatures[&msg].clone();
-                        self.broadcast(SecureBroadcastPayload::ProofOfAgreement { msg: msg, proof })
+                        self.broadcast(Payload::ProofOfAgreement { msg: msg, proof })
                     } else {
                         vec![]
                     }
                 }
-                SecureBroadcastPayload::ProofOfAgreement { msg, .. } => {
+                Payload::ProofOfAgreement { msg, .. } => {
                     self.delivered.apply(msg.dot);
                     self.bank.apply(msg.op);
                     vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
@@ -142,16 +142,16 @@ impl SecureBroadcastProc {
         }
     }
 
-    fn validate_payload(&self, from: Identity, payload: &SecureBroadcastPayload) -> bool {
+    fn validate_payload(&self, from: Identity, payload: &Payload) -> bool {
         let validation_tests = match payload {
-            SecureBroadcastPayload::RequestValidation { msg } => vec![
+            Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
                 (msg.dot == self.received.inc(from), "not the next msg"),
                 (self.bank.validate(from, &msg.op), "failed bank validation"),
             ],
-            SecureBroadcastPayload::SignedValidated { msg, sig } => vec![
+            Payload::SignedValidated { msg, sig } => vec![
                 (
-                    self.verify_source(&from, &msg, sig),
+                    self.verify_sig(&from, &msg, sig),
                     "failed signature verification",
                 ),
                 (
@@ -159,7 +159,7 @@ impl SecureBroadcastProc {
                     "we didn't request this validation",
                 ),
             ],
-            SecureBroadcastPayload::ProofOfAgreement { msg, proof } => vec![
+            Payload::ProofOfAgreement { msg, proof } => vec![
                 (
                     self.delivered.inc(from) == msg.dot,
                     "We've either already delivered this msg, or it is out of order",
@@ -174,7 +174,7 @@ impl SecureBroadcastProc {
                 (
                     proof
                         .iter()
-                        .all(|(signatory, sig)| self.verify_source(signatory, &msg, &sig)),
+                        .all(|(signatory, sig)| self.verify_sig(signatory, &msg, &sig)),
                     "proof contains invalid signatures",
                 ),
             ],
@@ -191,7 +191,7 @@ impl SecureBroadcastProc {
         n * 3 >= self.peers.len() * 2
     }
 
-    fn broadcast(&self, msg: SecureBroadcastPayload) -> Vec<Packet> {
+    fn broadcast(&self, msg: Payload) -> Vec<Packet> {
         println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers);
         self.peers
             .iter()
@@ -199,7 +199,7 @@ impl SecureBroadcastProc {
             .collect()
     }
 
-    fn send(&self, dest: Identity, payload: SecureBroadcastPayload) -> Packet {
+    fn send(&self, dest: Identity, payload: Payload) -> Packet {
         let sig = self.sign(&payload);
         Packet {
             source: self.identity(),
@@ -216,7 +216,7 @@ impl SecureBroadcastProc {
         Sig(msg_sig)
     }
 
-    fn verify_source(&self, source: &Identity, msg: impl Serialize, sig: &Sig) -> bool {
+    fn verify_sig(&self, source: &Identity, msg: impl Serialize, sig: &Sig) -> bool {
         let msg_bytes = bincode::serialize(&msg).expect("Failed to serialize");
         source.0.verify::<Sha512>(&msg_bytes, &sig.0).is_ok()
     }
