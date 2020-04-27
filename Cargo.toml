@@ -7,3 +7,9 @@ edition = "2018"
 [dependencies]
 # crdts = { path = "../rust-crdt" }
 crdts = { git = "https://github.com/rust-crdt/rust-crdt", branch = "useability-improvements" }
+ed25519-dalek = { version = "0.9.1", features = ["serde"] }
+rand = "0.6"
+sha2 = "0.8.1"
+serde = "1.0.106"
+bincode = "1.2.1"
+hex = "0.4.2"

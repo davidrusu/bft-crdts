@@ -9,17 +9,10 @@ pub type Member = u8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AT2Op(Op<Member, Identity>);
 
-impl AT2Op {
-    /// TODO: generalize the term "account", borrowed here from asset trasfer (Does "resource" capture it?)
-    /// These affected accounts become causally dependent on this operation.
-    pub fn affected_accounts(&self, source: Identity) -> HashSet<Account> {
-        vec![source].into_iter().collect()
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct AT2Orswot {
     orswot: Orswot<Member, Identity>,
+
     // Set of all Add op's that have been accepted and applied.
     // This is used to validate orswot::Op::Rm operations since
     // we need to ensure that a member was added by a source before
