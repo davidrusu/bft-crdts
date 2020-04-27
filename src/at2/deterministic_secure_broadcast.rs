@@ -21,6 +21,14 @@ pub struct SecureBroadcastProc {
     msgs_waiting_for_signatures: HashMap<Msg, HashMap<Identity, Sig>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Packet {
+    pub source: Identity,
+    pub dest: Identity,
+    pub payload: Payload,
+    pub sig: Sig,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum Payload {
     RequestValidation {
@@ -40,14 +48,6 @@ pub enum Payload {
 pub struct Msg {
     op: Transfer,
     dot: Dot<Identity>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Packet {
-    pub source: Identity,
-    pub dest: Identity,
-    pub payload: Payload,
-    pub sig: Sig,
 }
 
 impl SecureBroadcastProc {
