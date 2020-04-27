@@ -6,25 +6,26 @@ use crate::at2::identity::Identity;
 
 #[derive(Debug)]
 struct Net {
-    procs: Vec<SecureBroadcastProc>,
+    procs: Vec<SecureBroadcastProc>, // Make this a Map<Identity, SecureBroadcastProc>
 }
 
 impl Net {
-    fn new(initial_balances: &[Money]) -> Self {
-        let mut procs = Vec::new();
-        let mut peers_with_balances = HashMap::new();
+    fn new() -> Self {
+        Self { procs: Vec::new() }
+    }
 
-        for balance in initial_balances.iter().cloned() {
-            let proc = SecureBroadcastProc::new();
-            peers_with_balances.insert(proc.identity(), balance);
-            procs.push(proc);
+    fn add_proc(&mut self) -> Identity {
+        let mut proc = SecureBroadcastProc::new();
+        let id = proc.identity();
+
+        for existing_proc in self.procs.iter_mut() {
+            proc.add_peer(existing_proc.identity()); // TODO: do we need to do this if we will be syncing from that proc below?
+            existing_proc.add_peer(id);
+            proc.sync_from(&existing_proc); // TODO: move this into a message
         }
 
-        for proc in procs.iter_mut() {
-            proc.update_peer_list(&peers_with_balances);
-        }
-
-        Self { procs }
+        self.procs.push(proc);
+        id
     }
 
     fn identities(&self) -> HashSet<Identity> {
@@ -35,14 +36,27 @@ impl Net {
         self.identities()
             .iter()
             .cloned()
-            .find(|i| self.balance_from_pov_of_proc(*i, *i).unwrap() == balance)
+            .find(|i| self.balance_from_pov_of_proc(i, i).unwrap() == balance)
     }
 
-    fn balance_from_pov_of_proc(&self, pov: Identity, account: Identity) -> Option<Money> {
+    fn balance_from_pov_of_proc(&self, pov: &Identity, account: &Identity) -> Option<Money> {
         self.procs
             .iter()
-            .find(|secure_p| secure_p.identity() == pov)
+            .find(|secure_p| &secure_p.identity() == pov)
             .map(|secure_p| secure_p.read_state(|p| p.balance(account)))
+    }
+
+    fn open_account(
+        &self,
+        initiating_proc: Identity,
+        bank_owner: Identity,
+        initial_balance: Money,
+    ) -> Vec<Packet> {
+        self.procs
+            .iter()
+            .find(|p| p.identity() == initiating_proc)
+            .expect("[ERROR] invalid initiating_proc proc")
+            .exec_bft_op(|bank| Some(bank.open_account(bank_owner, initial_balance)))
     }
 
     fn transfer(
@@ -60,7 +74,7 @@ impl Net {
     }
 
     fn deliver_packet(&mut self, packet: Packet) -> Vec<Packet> {
-        println!("[NET] Delivering packet {}->{}", packet.source, packet.dest);
+        println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.procs
             .iter_mut()
             .find(|p| p.identity() == packet.dest)
@@ -73,7 +87,7 @@ impl Net {
 
         for identity in self.identities() {
             for balance_identity in self.identities() {
-                if let Some(balance) = self.balance_from_pov_of_proc(identity, balance_identity) {
+                if let Some(balance) = self.balance_from_pov_of_proc(&identity, &balance_identity) {
                     balances_by_proc
                         .entry(balance_identity)
                         .or_default()
@@ -106,7 +120,17 @@ mod tests {
 
     quickcheck! {
         fn there_is_agreement_on_initial_balances(balances: Vec<Money>) -> bool {
-            let net = Net::new(&balances);
+            let mut net = Net::new();
+            for balance in balances.iter().cloned() {
+                let identity = net.add_proc();
+
+                // TODO: add a test where the initiating identity is different from hte owner account
+                let mut packets = net.open_account(identity, identity, balance);
+                while let Some(packet) = packets.pop() {
+                    packets.extend(net.deliver_packet(packet));
+                }
+            }
+
             if !net.everyone_is_in_agreement() {
                 return false
             }
@@ -117,7 +141,7 @@ mod tests {
                 let mut remaining_balances = balances.clone();
 
                 for other_identity in net.identities() {
-                    if let Some(balance) = net.balance_from_pov_of_proc(identity, other_identity) {
+                    if let Some(balance) = net.balance_from_pov_of_proc(&identity, &other_identity) {
                         if remaining_balances.remove_item(&balance).is_none() {
                             // This balance should have been in our initial set
                             return false;
@@ -142,15 +166,26 @@ mod tests {
                 return TestResult::discard()
             }
 
-            let mut net = Net::new(&balances);
+
+            let mut net = Net::new();
+            for balance in balances.iter().cloned() {
+                let identity = net.add_proc();
+
+                // TODO: add a test where the initiating identity is different from hte owner account
+                let mut packets = net.open_account(identity, identity, balance);
+                while let Some(packet) = packets.pop() {
+                    packets.extend(net.deliver_packet(packet));
+                }
+            }
+
             let identities: Vec<Identity> = net.identities().into_iter().collect();
 
             let initiator = identities[initiator_idx % identities.len()];
             let from = identities[from_idx % identities.len()];
             let to = identities[to_idx % identities.len()];
 
-            let initial_from_balance = net.balance_from_pov_of_proc(initiator, from).unwrap();
-            let initial_to_balance = net.balance_from_pov_of_proc(initiator, to).unwrap();
+            let initial_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
+            let initial_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
 
             let mut packets = net.transfer(initiator, from, to, amount);
 
@@ -160,8 +195,8 @@ mod tests {
             }
             assert!(net.everyone_is_in_agreement());
 
-            let final_from_balance = net.balance_from_pov_of_proc(initiator, from).unwrap();
-            let final_to_balance = net.balance_from_pov_of_proc(initiator, to).unwrap();
+            let final_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
+            let final_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
 
             if initiator != from || initial_from_balance < amount {
                 // The network should have rejected these transfers on the grounds of initiator being an imposters or not enough funds
@@ -195,16 +230,25 @@ mod tests {
                 return TestResult::discard();
             }
 
-            let mut net = Net::new(&balances);
+            let mut net = Net::new();
+            for balance in balances.iter().cloned() {
+                let identity = net.add_proc();
+
+                // TODO: add a test where the initiating identity is different from hte owner account
+                let mut packets = net.open_account(identity, identity, balance);
+                while let Some(packet) = packets.pop() {
+                    packets.extend(net.deliver_packet(packet));
+                }
+            }
 
             let identities: Vec<_> = net.identities().into_iter().collect();
             let a = identities[0];
             let b = identities[1];
             let c = identities[2];
 
-            let a_init_balance = net.balance_from_pov_of_proc(a, a).unwrap();
-            let b_init_balance = net.balance_from_pov_of_proc(b, b).unwrap();
-            let c_init_balance = net.balance_from_pov_of_proc(c, c).unwrap();
+            let a_init_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
+            let b_init_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
+            let c_init_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
 
             let mut first_broadcast_packets = net.transfer(a, a, b, a_init_balance);
             let mut second_broadcast_packets = net.transfer(a, a, c, a_init_balance);
@@ -236,9 +280,9 @@ mod tests {
 
             assert!(net.everyone_is_in_agreement());
 
-            let a_final_balance = net.balance_from_pov_of_proc(a, a).unwrap();
-            let b_final_balance = net.balance_from_pov_of_proc(b, b).unwrap();
-            let c_final_balance = net.balance_from_pov_of_proc(c, c).unwrap();
+            let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
+            let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
+            let c_final_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
             let a_delta = a_init_balance - a_final_balance; // rev. since we are withdrawing from a
             let b_delta = b_final_balance - b_init_balance;
             let c_delta = c_final_balance - c_init_balance;
@@ -262,15 +306,24 @@ mod tests {
 
     #[test]
     fn test_transfer_is_actually_moving_money_qc1() {
-        let mut net = Net::new(&[0, 9]);
+        let mut net = Net::new();
+        for balance in vec![0, 9] {
+            let identity = net.add_proc();
+
+            // TODO: add a test where the initiating identity is different from hte owner account
+            let mut packets = net.open_account(identity, identity, balance);
+            while let Some(packet) = packets.pop() {
+                packets.extend(net.deliver_packet(packet));
+            }
+        }
 
         let initiator = net.find_identity_with_balance(9).unwrap();
         let from = initiator;
         let to = net.find_identity_with_balance(0).unwrap();
         let amount = 9;
 
-        let initial_from_balance = net.balance_from_pov_of_proc(initiator, from).unwrap();
-        let initial_to_balance = net.balance_from_pov_of_proc(initiator, to).unwrap();
+        let initial_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
+        let initial_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
 
         assert_eq!(initial_from_balance, 9);
         assert_eq!(initial_to_balance, 0);
@@ -283,8 +336,8 @@ mod tests {
 
         assert!(net.everyone_is_in_agreement());
 
-        let final_from_balance = net.balance_from_pov_of_proc(initiator, from).unwrap();
-        let final_to_balance = net.balance_from_pov_of_proc(initiator, to).unwrap();
+        let final_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
+        let final_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
 
         let from_balance_abs_delta = initial_from_balance - final_from_balance; // inverted because the delta is neg.
         let to_balance_abs_delta = final_to_balance - initial_to_balance;
@@ -295,7 +348,16 @@ mod tests {
 
     #[test]
     fn test_causal_dependancy() {
-        let mut net = Net::new(&[1000, 1000, 1000, 1000]);
+        let mut net = Net::new();
+        for balance in vec![1000, 1000, 1000, 1000] {
+            let identity = net.add_proc();
+
+            // TODO: add a test where the initiating identity is different from hte owner account
+            let mut packets = net.open_account(identity, identity, balance);
+            while let Some(packet) = packets.pop() {
+                packets.extend(net.deliver_packet(packet));
+            }
+        }
 
         let identities: Vec<_> = net.identities().into_iter().collect();
         let a = identities[0];
@@ -309,10 +371,10 @@ mod tests {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
-        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(500));
-        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(1500));
-        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1000));
-        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(1000));
+        assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(500));
+        assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1000));
+        assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(1000));
 
         // T1: a -> c
         let mut packets = net.transfer(a, a, c, 500);
@@ -320,10 +382,10 @@ mod tests {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
-        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(0));
-        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(1500));
-        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1500));
-        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(1000));
+        assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(1000));
 
         // T2: b -> d
         let mut packets = net.transfer(b, b, d, 1500);
@@ -331,24 +393,33 @@ mod tests {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
-        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(0));
-        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(0));
-        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1500));
-        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(2500));
+        assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
     }
 
     #[test]
     fn test_double_spend_qc2() {
-        let mut net = Net::new(&[0, 0, 0]);
+        let mut net = Net::new();
+        for balance in vec![0, 0, 0] {
+            let identity = net.add_proc();
+
+            // TODO: add a test where the initiating identity is different from hte owner account
+            let mut packets = net.open_account(identity, identity, balance);
+            while let Some(packet) = packets.pop() {
+                packets.extend(net.deliver_packet(packet));
+            }
+        }
 
         let identities: Vec<_> = net.identities().into_iter().collect();
         let a = identities[0];
         let b = identities[1];
         let c = identities[2];
 
-        let a_init_balance = net.balance_from_pov_of_proc(a, a).unwrap();
-        let b_init_balance = net.balance_from_pov_of_proc(b, b).unwrap();
-        let c_init_balance = net.balance_from_pov_of_proc(c, c).unwrap();
+        let a_init_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
+        let b_init_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
+        let c_init_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
 
         let mut packet_queue: Vec<Packet> = Vec::new();
         packet_queue.extend(net.transfer(a, a, b, a_init_balance));
@@ -362,9 +433,9 @@ mod tests {
 
         assert!(net.everyone_is_in_agreement());
 
-        let a_final_balance = net.balance_from_pov_of_proc(a, a).unwrap();
-        let b_final_balance = net.balance_from_pov_of_proc(b, b).unwrap();
-        let c_final_balance = net.balance_from_pov_of_proc(c, c).unwrap();
+        let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
+        let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
+        let c_final_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
         let b_delta = b_final_balance - b_init_balance;
         let c_delta = c_final_balance - c_init_balance;
 
@@ -382,7 +453,16 @@ mod tests {
         // requests for validation evenly between procs, the network will not
         // execute any transaction.
 
-        let mut net = Net::new(&[2, 3, 4, 1]);
+        let mut net = Net::new();
+        for balance in vec![2, 3, 4, 1] {
+            let identity = net.add_proc();
+
+            // TODO: add a test where the initiating identity is different from hte owner account
+            let mut packets = net.open_account(identity, identity, balance);
+            while let Some(packet) = packets.pop() {
+                packets.extend(net.deliver_packet(packet));
+            }
+        }
 
         let a = net.find_identity_with_balance(1).unwrap();
         let b = net.find_identity_with_balance(2).unwrap();
@@ -422,9 +502,9 @@ mod tests {
 
         assert!(net.everyone_is_in_agreement());
 
-        let a_final_balance = net.balance_from_pov_of_proc(a, a).unwrap();
-        let b_final_balance = net.balance_from_pov_of_proc(b, b).unwrap();
-        let c_final_balance = net.balance_from_pov_of_proc(c, c).unwrap();
+        let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
+        let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
+        let c_final_balance = net.balance_from_pov_of_proc(&c, &c).unwrap();
 
         assert_eq!(a_final_balance, 1);
         assert_eq!(b_final_balance, 2);
