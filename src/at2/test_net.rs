@@ -303,31 +303,34 @@ mod tests {
         let c = identities[2];
         let d = identities[3];
 
-        let mut packets = Vec::new();
         // T0:  a -> b
-        packets.extend(net.transfer(a, a, b, 500));
-
+        let mut packets = net.transfer(a, a, b, 500);
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
+        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(500));
+        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1000));
+        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(1000));
 
         // T1: a -> c
-        packets.extend(net.transfer(a, a, c, 500));
-
+        let mut packets = net.transfer(a, a, c, 500);
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
+        assert_eq!(net.balance_from_pov_of_proc(a, a), Some(0));
+        assert_eq!(net.balance_from_pov_of_proc(b, b), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1500));
+        assert_eq!(net.balance_from_pov_of_proc(d, d), Some(1000));
 
         // T2: b -> d
-        packets.extend(net.transfer(b, b, d, 1500));
-
+        let mut packets = net.transfer(b, b, d, 1500);
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
         assert!(net.everyone_is_in_agreement());
-
         assert_eq!(net.balance_from_pov_of_proc(a, a), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(b, b), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(c, c), Some(1500));
