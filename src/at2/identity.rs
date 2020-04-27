@@ -30,7 +30,7 @@ impl Ord for Identity {
 impl fmt::Display for Identity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.as_bytes();
-        write!(f, "id:{}..", hex::encode(&bytes[..2]))
+        write!(f, "i:{}..", hex::encode(&bytes[..2]))
     }
 }
 
