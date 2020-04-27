@@ -1,8 +1,8 @@
 /// An implementation of deterministic SecureBroadcast.
 use std::collections::{HashMap, HashSet};
 
-use crate::at2::bank::{Bank, Op};
 use crate::at2::identity::{Identity, Sig};
+use crate::at2::traits::SecureBroadcastAlgorithm;
 
 use bincode;
 use crdts::{CmRDT, CvRDT, Dot, VClock};
@@ -12,52 +12,52 @@ use serde::Serialize;
 use sha2::Sha512;
 
 #[derive(Debug)]
-pub struct SecureBroadcastProc {
+pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     keypair: Keypair,
-    bank: Bank,
+    algo: A,
     peers: HashSet<Identity>,
     delivered: VClock<Identity>,
     received: VClock<Identity>,
-    msgs_waiting_for_signatures: HashMap<Msg, HashMap<Identity, Sig>>,
+    msgs_waiting_for_signatures: HashMap<Msg<A>, HashMap<Identity, Sig>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Packet {
+pub struct Packet<A: SecureBroadcastAlgorithm> {
     pub source: Identity,
     pub dest: Identity,
-    pub payload: Payload,
+    pub payload: Payload<A>,
     pub sig: Sig,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub enum Payload {
+pub enum Payload<A: SecureBroadcastAlgorithm> {
     RequestValidation {
-        msg: Msg,
+        msg: Msg<A>,
     },
     SignedValidated {
-        msg: Msg,
+        msg: Msg<A>,
         sig: Sig,
     },
     ProofOfAgreement {
-        msg: Msg,
+        msg: Msg<A>,
         proof: HashMap<Identity, Sig>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
-pub struct Msg {
-    op: Op,
+pub struct Msg<A: SecureBroadcastAlgorithm> {
+    op: A::Op,
     dot: Dot<Identity>,
 }
 
-impl SecureBroadcastProc {
+impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     pub fn new() -> Self {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
         let identity = Identity(keypair.public);
         Self {
             keypair: keypair,
-            bank: Bank::new(identity),
+            algo: A::new(identity),
             peers: vec![identity].into_iter().collect(),
             delivered: VClock::new(),
             received: VClock::new(),
@@ -77,15 +77,15 @@ impl SecureBroadcastProc {
         self.peers.extend(other.peers.clone());
         self.delivered.merge(other.delivered.clone());
         self.received.merge(other.received.clone());
-        self.bank.sync_from(other.bank.clone());
+        self.algo.sync_from(other.algo.clone());
     }
 
     pub fn identity(&self) -> Identity {
         Identity(self.keypair.public)
     }
 
-    pub fn exec_bft_op(&self, f: impl FnOnce(&Bank) -> Option<Op>) -> Vec<Packet> {
-        if let Some(op) = f(&self.bank) {
+    pub fn exec_bft_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Vec<Packet<A>> {
+        if let Some(op) = f(&self.algo) {
             let msg = Msg {
                 op,
                 dot: self.received.inc(self.identity()),
@@ -99,11 +99,11 @@ impl SecureBroadcastProc {
         }
     }
 
-    pub fn read_state<V>(&self, f: impl FnOnce(&Bank) -> V) -> V {
-        f(&self.bank)
+    pub fn read_state<V>(&self, f: impl FnOnce(&A) -> V) -> V {
+        f(&self.algo)
     }
 
-    pub fn handle_packet(&mut self, packet: Packet) -> Vec<Packet> {
+    pub fn handle_packet(&mut self, packet: Packet<A>) -> Vec<Packet<A>> {
         println!(
             "[DSB] handling packet from {}->{}",
             packet.source,
@@ -157,18 +157,18 @@ impl SecureBroadcastProc {
             Payload::ProofOfAgreement { msg, .. } => {
                 println!("[DSB] proof of agreement");
                 self.delivered.apply(msg.dot);
-                self.bank.apply(msg.op);
+                self.algo.apply(msg.op);
                 vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
             }
         }
     }
 
-    fn validate_payload(&self, from: Identity, payload: &Payload) -> bool {
+    fn validate_payload(&self, from: Identity, payload: &Payload<A>) -> bool {
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
                 (msg.dot == self.received.inc(from), "not the next msg"),
-                (self.bank.validate(&from, &msg.op), "failed bank validation"),
+                (self.algo.validate(&from, &msg.op), "failed bank validation"),
             ],
             Payload::SignedValidated { msg, sig } => vec![
                 (self.verify_sig(&from, &msg, sig), "failed sig verification"),
@@ -209,7 +209,7 @@ impl SecureBroadcastProc {
         n >= self.peers.len()
     }
 
-    fn broadcast(&self, msg: Payload) -> Vec<Packet> {
+    fn broadcast(&self, msg: Payload<A>) -> Vec<Packet<A>> {
         println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers);
         self.peers
             .iter()
@@ -217,7 +217,7 @@ impl SecureBroadcastProc {
             .collect()
     }
 
-    fn send(&self, dest: Identity, payload: Payload) -> Packet {
+    fn send(&self, dest: Identity, payload: Payload<A>) -> Packet<A> {
         let sig = self.sign(&payload);
         Packet {
             source: self.identity(),

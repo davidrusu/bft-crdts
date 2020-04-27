@@ -1,8 +1,9 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use crate::at2::identity::Identity;
+use crate::at2::traits::SecureBroadcastAlgorithm;
 
 // TODO: introduce decomp. of Account from Identity
 // pub type Account = Identity; // In the paper, Identity and Account are synonymous
@@ -26,48 +27,21 @@ struct Transfer {
     deps: BTreeSet<Transfer>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Hash, PartialEq, Eq)]
 pub struct Bank {
     id: Identity,
 
     // When a new identity is created, it will be given an initial balance
-    initial_balances: HashMap<Identity, Money>,
+    initial_balances: BTreeMap<Identity, Money>,
 
     // Set of all transfers impacting a given identity
-    hist: HashMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
+    hist: BTreeMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
 
     // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,
 }
 
 impl Bank {
-    pub fn new(id: Identity) -> Self {
-        Bank {
-            id,
-            initial_balances: HashMap::new(),
-            hist: HashMap::new(),
-            deps: BTreeSet::new(),
-        }
-    }
-
-    pub fn sync_from(&mut self, other: Self) {
-        // TODO: this is not ideal, we dont want to ship the entire local state over
-        // ie. id and deps are not needed
-
-        for (id, balance) in other.initial_balances {
-            if let Some(existing_balance) = self.initial_balances.get(&id) {
-                assert_eq!(*existing_balance, balance);
-            } else {
-                self.initial_balances.insert(id, balance);
-            }
-        }
-
-        for (id, hist) in other.hist {
-            let account_hist = self.hist.entry(id).or_default();
-            account_hist.extend(hist);
-        }
-    }
-
     pub fn open_account(&self, owner: Identity, balance: Money) -> Op {
         Op::OpenAccount { owner, balance }
     }
@@ -131,9 +105,40 @@ impl Bank {
             }))
         }
     }
+}
+
+impl SecureBroadcastAlgorithm for Bank {
+    type Op = Op;
+
+    fn new(id: Identity) -> Self {
+        Bank {
+            id,
+            initial_balances: Default::default(),
+            hist: Default::default(),
+            deps: Default::default(),
+        }
+    }
+
+    fn sync_from(&mut self, other: Self) {
+        // TODO: this is not ideal, we dont want to ship the entire local state over
+        // ie. id and deps are not needed
+
+        for (id, balance) in other.initial_balances {
+            if let Some(existing_balance) = self.initial_balances.get(&id) {
+                assert_eq!(*existing_balance, balance);
+            } else {
+                self.initial_balances.insert(id, balance);
+            }
+        }
+
+        for (id, hist) in other.hist {
+            let account_hist = self.hist.entry(id).or_default();
+            account_hist.extend(hist);
+        }
+    }
 
     /// Protection against Byzantines
-    pub fn validate(&self, from: &Identity, op: &Op) -> bool {
+    fn validate(&self, from: &Identity, op: &Op) -> bool {
         let validation_tests = match op {
             Op::Transfer(transfer) => vec![
                 (
@@ -171,7 +176,7 @@ impl Bank {
     }
 
     /// Executed once an op has been validated
-    pub fn apply(&mut self, op: Op) {
+    fn apply(&mut self, op: Op) {
         match op {
             Op::Transfer(transfer) => {
                 // Update the history for the outgoing account
