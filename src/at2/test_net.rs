@@ -142,21 +142,17 @@ impl Net {
     }
 
     fn everyone_is_in_agreement(&self) -> bool {
-        if let Some(reference_state) = self
+        let mut member_states_iter = self
             .members()
-            .iter()
-            .next()
-            .map(|id| self.proc_from_id(id).unwrap().state())
-        {
-            for member_id in self.members() {
-                let member_state = self.proc_from_id(&member_id).unwrap().state();
-                if member_state != reference_state {
-                    println!("{:?} != {:?}", member_state, reference_state);
-                    return false;
-                }
-            }
-        }
-        true
+            .into_iter()
+            .flat_map(|id| self.proc_from_id(&id))
+            .map(|p| p.state());
+
+        let reference_state = if let Some(state) = member_states_iter.next() {
+            member_states_iter.all(|s| s == reference_state)
+        } else {
+            true
+        };
     }
 }
 
