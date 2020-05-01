@@ -141,18 +141,18 @@ impl Net {
             .unwrap_or_default()
     }
 
-    fn everyone_is_in_agreement(&self) -> bool {
+    fn members_are_in_agreement(&self) -> bool {
         let mut member_states_iter = self
             .members()
             .into_iter()
             .flat_map(|id| self.proc_from_id(&id))
             .map(|p| p.state());
 
-        let reference_state = if let Some(state) = member_states_iter.next() {
+        if let Some(reference_state) = member_states_iter.next() {
             member_states_iter.all(|s| s == reference_state)
         } else {
             true
-        };
+        }
     }
 }
 
@@ -181,7 +181,7 @@ mod tests {
                 }
             }
 
-            if !net.everyone_is_in_agreement() {
+            if !net.members_are_in_agreement() {
                 return false
             }
 
@@ -250,7 +250,7 @@ mod tests {
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
-            assert!(net.everyone_is_in_agreement());
+            assert!(net.members_are_in_agreement());
 
             let final_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
             let final_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
@@ -342,7 +342,7 @@ mod tests {
                 }
             }
 
-            assert!(net.everyone_is_in_agreement());
+            assert!(net.members_are_in_agreement());
 
             let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
             let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
@@ -392,7 +392,7 @@ mod tests {
             }
         }
 
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
 
         // make sure that all balances in the network appear in the initial list of balances
         // and all balances in the initial list appear in the network (full identity <-> balance correspondance check)
@@ -450,7 +450,7 @@ mod tests {
             packets.extend(net.deliver_packet(packet));
         }
 
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
 
         let final_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
         let final_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
@@ -495,7 +495,7 @@ mod tests {
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(500));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1000));
@@ -506,7 +506,7 @@ mod tests {
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
@@ -517,7 +517,7 @@ mod tests {
         while let Some(packet) = packets.pop() {
             packets.extend(net.deliver_packet(packet));
         }
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
@@ -565,7 +565,7 @@ mod tests {
             }
         }
 
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
 
         let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
         let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
@@ -642,7 +642,7 @@ mod tests {
             }
         }
 
-        assert!(net.everyone_is_in_agreement());
+        assert!(net.members_are_in_agreement());
 
         let a_final_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
         let b_final_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
