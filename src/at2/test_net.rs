@@ -142,32 +142,20 @@ impl Net {
     }
 
     fn everyone_is_in_agreement(&self) -> bool {
-        let mut balances_by_proc: HashMap<Identity, HashSet<Money>> = HashMap::new();
-
-        for identity in self.identities() {
-            for balance_identity in self.identities() {
-                if let Some(balance) = self.balance_from_pov_of_proc(&identity, &balance_identity) {
-                    balances_by_proc
-                        .entry(balance_identity)
-                        .or_default()
-                        .insert(balance);
-                } else {
-                    // This identity did not exist
+        if let Some(reference_state) = self
+            .members()
+            .iter()
+            .next()
+            .map(|id| self.proc_from_id(id).unwrap().state())
+        {
+            for member_id in self.members() {
+                let member_state = self.proc_from_id(&member_id).unwrap().state();
+                if member_state != reference_state {
+                    println!("{:?} != {:?}", member_state, reference_state);
                     return false;
                 }
             }
         }
-
-        for (identity, balances) in balances_by_proc {
-            if balances.len() != 1 {
-                println!(
-                    "{} has a disagreement on it's balance: {:?}",
-                    identity, balances
-                );
-                return false;
-            }
-        }
-
         true
     }
 }
