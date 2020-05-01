@@ -3,14 +3,15 @@ use std::collections::{HashMap, HashSet};
 use crate::at2::bank::{Bank, Money, Op};
 use crate::at2::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
 use crate::at2::identity::Identity;
+use crate::at2::traits::SecureBroadcastAlgorithm;
 
 #[derive(Debug)]
-struct Net {
-    procs: Vec<SecureBroadcastProc<Bank>>, // Make this a Map<Identity, SecureBroadcastProc>
+struct Net<A: SecureBroadcastAlgorithm> {
+    procs: Vec<SecureBroadcastProc<A>>, // TODO: profile and make this a Map<Identity, SecureBroadcastProc> if it's too slow
     n_packets: u64,
 }
 
-impl Net {
+impl<A: SecureBroadcastAlgorithm> Net<A> {
     fn new() -> Self {
         Self {
             procs: Vec::new(),
@@ -41,30 +42,26 @@ impl Net {
         id
     }
 
-    fn on_proc<V>(
-        &self,
-        id: &Identity,
-        f: impl FnOnce(&SecureBroadcastProc<Bank>) -> V,
-    ) -> Option<V> {
+    fn on_proc<V>(&self, id: &Identity, f: impl FnOnce(&SecureBroadcastProc<A>) -> V) -> Option<V> {
         self.proc_from_id(id).map(|p| f(p))
     }
 
     fn on_proc_mut<V>(
         &mut self,
         id: &Identity,
-        f: impl FnOnce(&mut SecureBroadcastProc<Bank>) -> V,
+        f: impl FnOnce(&mut SecureBroadcastProc<A>) -> V,
     ) -> Option<V> {
         self.proc_from_id_mut(id).map(|p| f(p))
     }
 
     // TODO: inline these two methods if they continue to only be used by `on_proc*`
-    fn proc_from_id(&self, id: &Identity) -> Option<&SecureBroadcastProc<Bank>> {
+    fn proc_from_id(&self, id: &Identity) -> Option<&SecureBroadcastProc<A>> {
         self.procs
             .iter()
             .find(|secure_p| &secure_p.identity() == id)
     }
 
-    fn proc_from_id_mut(&mut self, id: &Identity) -> Option<&mut SecureBroadcastProc<Bank>> {
+    fn proc_from_id_mut(&mut self, id: &Identity) -> Option<&mut SecureBroadcastProc<A>> {
         self.procs
             .iter_mut()
             .find(|secure_p| &secure_p.identity() == id)
@@ -100,6 +97,29 @@ impl Net {
         self.procs.iter().map(|p| p.identity()).collect()
     }
 
+    fn deliver_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
+        println!("[NET] packet {}->{}", packet.source, packet.dest);
+        self.n_packets += 1;
+        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet))
+            .unwrap_or_default()
+    }
+
+    fn members_are_in_agreement(&self) -> bool {
+        let mut member_states_iter = self
+            .members()
+            .into_iter()
+            .flat_map(|id| self.proc_from_id(&id))
+            .map(|p| p.state());
+
+        if let Some(reference_state) = member_states_iter.next() {
+            member_states_iter.all(|s| s == reference_state)
+        } else {
+            true
+        }
+    }
+}
+
+impl Net<Bank> {
     fn find_identity_with_balance(&self, balance: Money) -> Option<Identity> {
         self.identities()
             .iter()
@@ -132,27 +152,6 @@ impl Net {
         self.on_proc(&initiating_proc, |p| {
             p.exec_algo_op(|bank| bank.transfer(from, to, amount))
         })
-    }
-
-    fn deliver_packet(&mut self, packet: Packet<Op>) -> Vec<Packet<Op>> {
-        println!("[NET] packet {}->{}", packet.source, packet.dest);
-        self.n_packets += 1;
-        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet))
-            .unwrap_or_default()
-    }
-
-    fn members_are_in_agreement(&self) -> bool {
-        let mut member_states_iter = self
-            .members()
-            .into_iter()
-            .flat_map(|id| self.proc_from_id(&id))
-            .map(|p| p.state());
-
-        if let Some(reference_state) = member_states_iter.next() {
-            member_states_iter.all(|s| s == reference_state)
-        } else {
-            true
-        }
     }
 }
 
