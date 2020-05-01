@@ -51,9 +51,9 @@ impl<M: Hash + Clone + Eq + std::fmt::Debug + Serialize> SecureBroadcastAlgorith
     }
 
     /// Protection against Byzantines
-    fn validate(&self, from: &Identity, op: &Self::Op) -> bool {
+    fn validate(&self, _from: &Identity, op: &Self::Op) -> bool {
         match op {
-            Op::Add(member) => true,
+            Op::Add(_member) => true,
             Op::Rm(member) => self.members.contains(member),
         }
     }

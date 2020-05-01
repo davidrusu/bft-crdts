@@ -17,7 +17,7 @@ pub enum Op {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-struct Transfer {
+pub struct Transfer {
     from: Identity,
     to: Identity,
     amount: Money,
@@ -156,7 +156,7 @@ impl SecureBroadcastAlgorithm for Bank {
                 // TODO: ensure from has an account
                 // TODO: ensure to has an account
             ],
-            Op::OpenAccount { owner, balance } => vec![
+            Op::OpenAccount { owner, balance: _ } => vec![
                 (
                     from == owner,
                     "Initiator is not the owner of the new account",
