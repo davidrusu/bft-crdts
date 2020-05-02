@@ -117,6 +117,12 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             true
         }
     }
+
+    fn run_packets_to_completion(&mut self, mut packets: Vec<Packet<A::Op>>) {
+        while let Some(packet) = packets.pop() {
+            packets.extend(self.deliver_packet(packet));
+        }
+    }
 }
 
 impl Net<Bank> {
@@ -161,28 +167,24 @@ mod tests {
     use crdts::quickcheck::{quickcheck, TestResult};
 
     quickcheck! {
-        fn there_is_agreement_on_initial_balances(balances: Vec<Money>) -> bool {
+        fn there_is_agreement_on_initial_balances(balances: Vec<Money>) -> TestResult {
+            if balances.len() > 7 {
+                // for the sake of time/computation, it's unlikely that we will have novel interesting behaviour with more procs.
+                return TestResult::discard()
+            }
+
             let mut net = Net::new();
             for balance in balances.iter().cloned() {
                 let identity = net.initialize_proc();
 
-                let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
-
+                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
                 net.anti_entropy();
 
-                // TODO: add a test where the initiating identity is different from hte owner account
-                let mut packets = net.open_account(identity, identity, balance).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
+                // TODO: add a test where the initiating identity is different from the owner account
+                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
             }
 
-            if !net.members_are_in_agreement() {
-                return false
-            }
+            assert!(net.members_are_in_agreement());
 
             // make sure that all balances in the network appear in the initial list of balances
             // and all balances in the initial list appear in the network (full identity <-> balance correspondance check)
@@ -190,48 +192,29 @@ mod tests {
                 let mut remaining_balances = balances.clone();
 
                 for other_identity in net.identities() {
-                    if let Some(balance) = net.balance_from_pov_of_proc(&identity, &other_identity) {
-                        if remaining_balances.remove_item(&balance).is_none() {
-                            // This balance should have been in our initial set
-                            return false;
-                        }
-                    } else {
-                        // This identity did not exist
-                        return false;
-                    }
+                    let balance = net.balance_from_pov_of_proc(&identity, &other_identity).unwrap();
+                    assert_eq!(remaining_balances.remove_item(&balance), Some(balance));
                 }
-
-                if remaining_balances.len() != 0 {
-                    // we should have consumed all balances
-                    return false;
-                }
+                assert_eq!(remaining_balances.len(), 0);
             }
 
-            true
+            TestResult::passed()
         }
 
         fn properties_of_a_single_transfer(balances: Vec<Money>, initiator_idx: usize, from_idx: usize, to_idx: usize, amount: Money) -> TestResult {
-            if balances.len() == 0 {
+            if balances.len() == 0 || balances.len() > 7 {
                 return TestResult::discard()
             }
-
 
             let mut net = Net::new();
             for balance in balances.iter().cloned() {
                 let identity = net.initialize_proc();
 
-                let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
-
+                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
                 net.anti_entropy();
 
                 // TODO: add a test where the initiating identity is different from hte owner account
-                let mut packets = net.open_account(identity, identity, balance).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
+                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
             }
 
             let identities: Vec<Identity> = net.identities().into_iter().collect();
@@ -243,12 +226,7 @@ mod tests {
             let initial_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
             let initial_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
 
-            let mut packets = net.transfer(initiator, from, to, amount).unwrap();
-
-            // TODO: new test, ensure the number of packets processed is bounded and deterministic
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
+            net.run_packets_to_completion(net.transfer(initiator, from, to, amount).unwrap());
             assert!(net.members_are_in_agreement());
 
             let final_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
@@ -282,7 +260,7 @@ mod tests {
 
 
         fn protection_against_double_spend(balances: Vec<Money>, packet_interleave: Vec<usize>) -> TestResult {
-            if balances.len() < 3 || packet_interleave.len() == 0{
+            if balances.len() < 3 || balances.len() > 7 || packet_interleave.len() == 0 {
                 return TestResult::discard();
             }
 
@@ -290,18 +268,10 @@ mod tests {
             for balance in balances.iter().cloned() {
                 let identity = net.initialize_proc();
 
-                let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
-
+                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
                 net.anti_entropy();
-
                 // TODO: add a test where the initiating identity is different from hte owner account
-                let mut packets = net.open_account(identity, identity, balance).unwrap();
-                while let Some(packet) = packets.pop() {
-                    packets.extend(net.deliver_packet(packet));
-                }
+                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
             }
 
             let identities: Vec<_> = net.identities().into_iter().collect();
@@ -321,7 +291,9 @@ mod tests {
 
             // Interleave the initial broadcast packets
             while first_broadcast_packets.len() > 0 || second_broadcast_packets.len() > 0 {
-                let packet = if packet_interleave[packet_number % packet_interleave.len()] % 2 == 0 {
+                let packet_position = packet_interleave[packet_number % packet_interleave.len()];
+                let packet_position_capped = packet_position % packet_queue.len().max(1);
+                let packet = if packet_position % 2 == 0 {
                     first_broadcast_packets.pop().unwrap_or_else(|| second_broadcast_packets.pop().unwrap())
                 } else {
                     second_broadcast_packets.pop().unwrap_or_else(|| first_broadcast_packets.pop().unwrap())
@@ -330,13 +302,13 @@ mod tests {
                 packet_number += 1;
             }
 
-
             while let Some(packet) = packet_queue.pop() {
                 let new_packets = net.deliver_packet(packet);
 
                 for packet in new_packets {
-                    let packet_position = packet_interleave[packet_number % packet_interleave.len()] % packet_queue.len().max(1);
-                    packet_queue.insert(packet_position, packet);
+                    let packet_position = packet_interleave[packet_number % packet_interleave.len()];
+                    let packet_position_capped = packet_position % packet_queue.len().max(1);
+                    packet_queue.insert(packet_position_capped, packet);
                     packet_number += 1;
                 }
             }
