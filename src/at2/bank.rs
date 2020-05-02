@@ -17,7 +17,7 @@ pub enum Op {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-struct Transfer {
+pub struct Transfer {
     from: Identity,
     to: Identity,
     amount: Money,
@@ -27,18 +27,23 @@ struct Transfer {
     deps: BTreeSet<Transfer>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bank {
     id: Identity,
+    // The set of dependencies of the next outgoing transfer
+    deps: BTreeSet<Transfer>,
 
-    // When a new identity is created, it will be given an initial balance
+    // The state that is replicated and managed by the network
+    replicated: BankState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BankState {
+    // When a new account is created, it will be given an initial balance
     initial_balances: HashMap<Identity, Money>,
 
     // Set of all transfers impacting a given identity
     hist: HashMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
-
-    // The set of dependencies of the next outgoing transfer
-    deps: BTreeSet<Transfer>,
 }
 
 impl Bank {
@@ -47,7 +52,8 @@ impl Bank {
     }
 
     pub fn initial_balance(&self, identity: &Identity) -> Money {
-        self.initial_balances
+        self.replicated
+            .initial_balances
             .get(&identity)
             .cloned()
             .unwrap_or_else(|| panic!("[ERROR] No initial balance for {}", identity))
@@ -83,7 +89,11 @@ impl Bank {
     }
 
     fn history(&self, identity: &Identity) -> BTreeSet<Transfer> {
-        self.hist.get(&identity).cloned().unwrap_or_default()
+        self.replicated
+            .hist
+            .get(&identity)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Op> {
@@ -109,30 +119,34 @@ impl Bank {
 
 impl SecureBroadcastAlgorithm for Bank {
     type Op = Op;
+    type ReplicatedState = BankState;
 
     fn new(id: Identity) -> Self {
         Bank {
             id,
-            initial_balances: Default::default(),
-            hist: Default::default(),
             deps: Default::default(),
+            replicated: BankState {
+                initial_balances: Default::default(),
+                hist: Default::default(),
+            },
         }
     }
 
-    fn sync_from(&mut self, other: Self) {
-        // TODO: this is not ideal, we dont want to ship the entire local state over
-        // ie. id and deps are not needed
+    fn state(&self) -> Self::ReplicatedState {
+        self.replicated.clone()
+    }
 
+    fn sync_from(&mut self, other: Self::ReplicatedState) {
         for (id, balance) in other.initial_balances {
-            if let Some(existing_balance) = self.initial_balances.get(&id) {
+            if let Some(existing_balance) = self.replicated.initial_balances.get(&id) {
                 assert_eq!(*existing_balance, balance);
             } else {
-                self.initial_balances.insert(id, balance);
+                self.replicated.initial_balances.insert(id, balance);
             }
         }
 
         for (id, hist) in other.hist {
-            let account_hist = self.hist.entry(id).or_default();
+            let account_hist = self.replicated.hist.entry(id).or_default();
             account_hist.extend(hist);
         }
     }
@@ -156,13 +170,13 @@ impl SecureBroadcastAlgorithm for Bank {
                 // TODO: ensure from has an account
                 // TODO: ensure to has an account
             ],
-            Op::OpenAccount { owner, balance } => vec![
+            Op::OpenAccount { owner, balance: _ } => vec![
                 (
                     from == owner,
                     "Initiator is not the owner of the new account",
                 ),
                 (
-                    !self.initial_balances.contains_key(owner),
+                    !self.replicated.initial_balances.contains_key(owner),
                     "Owner already has an account",
                 ),
             ],
@@ -180,13 +194,15 @@ impl SecureBroadcastAlgorithm for Bank {
         match op {
             Op::Transfer(transfer) => {
                 // Update the history for the outgoing account
-                self.hist
+                self.replicated
+                    .hist
                     .entry(transfer.from)
                     .or_default()
                     .insert(transfer.clone());
 
                 // Update the history for the incoming account
-                self.hist
+                self.replicated
+                    .hist
                     .entry(transfer.to)
                     .or_default()
                     .insert(transfer.clone());
@@ -206,7 +222,7 @@ impl SecureBroadcastAlgorithm for Bank {
             }
             Op::OpenAccount { owner, balance } => {
                 println!("[BANK] opening new account for {} with ${}", owner, balance);
-                self.initial_balances.insert(owner, balance);
+                self.replicated.initial_balances.insert(owner, balance);
             }
         }
     }

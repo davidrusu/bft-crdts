@@ -13,12 +13,28 @@ use sha2::Sha512;
 
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
+    // This state is kept private to this process.
+    // We either don't want, or don't need the outside world to know about this state.
     keypair: Keypair,
+    msgs_waiting_for_signatures: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
+
+    // algo is partly private and partly replicated,
+    // A::ReplicatedState is the state that is replicated
     algo: A,
+
+    // This is the state that we expect all honest members of the network should agree on.
+    // It is actively shared through gossip/anti-entropy efforts.
     peers: HashSet<Identity>,
     delivered: VClock<Identity>,
     received: VClock<Identity>,
-    msgs_waiting_for_signatures: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
+    algo_state: A::ReplicatedState,
+    peers: HashSet<Identity>,
+    delivered: VClock<Identity>,
+    received: VClock<Identity>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,55 +62,78 @@ pub enum Payload<Op> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 pub struct Msg<Op> {
-    op: Op,
+    op: BFTOp<Op>,
     dot: Dot<Identity>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
+enum BFTOp<Op> {
+    NewPeer(Identity),
+    // TODO: support peers leaving
+    AlgoOp(Op),
+}
+
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
-    pub fn new() -> Self {
+    pub fn new(known_peers: HashSet<Identity>) -> Self {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
         let identity = Identity(keypair.public);
+        let peers = if known_peers.is_empty() {
+            // This is the first node to join the network. We need to treat it special
+            std::iter::once(identity).collect()
+        } else {
+            known_peers
+        };
+
         Self {
             keypair: keypair,
+            msgs_waiting_for_signatures: HashMap::new(),
             algo: A::new(identity),
-            peers: vec![identity].into_iter().collect(),
+            peers,
             delivered: VClock::new(),
             received: VClock::new(),
-            msgs_waiting_for_signatures: HashMap::new(),
         }
-    }
-
-    pub fn add_peer(&mut self, peer: Identity) {
-        // TODO: we probably want BFT agreement on adding a new peer
-        self.peers.insert(peer);
-    }
-
-    pub fn sync_from(&mut self, other: &Self) {
-        // TODO: this is not ideal, we dont want to ship the entire local state over
-        // ie. keypair, msgs_waiting_for_signatures, etc..
-
-        self.peers.extend(other.peers.clone());
-        self.delivered.merge(other.delivered.clone());
-        self.received.merge(other.received.clone());
-        self.algo.sync_from(other.algo.clone());
     }
 
     pub fn identity(&self) -> Identity {
         Identity(self.keypair.public)
     }
 
-    pub fn exec_bft_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Vec<Packet<A::Op>> {
+    pub fn state(&self) -> ReplicatedState<A> {
+        ReplicatedState {
+            algo_state: self.algo.state(),
+            peers: self.peers.clone(),
+            delivered: self.delivered.clone(),
+            received: self.received.clone(),
+        }
+    }
+
+    pub fn peers(&self) -> HashSet<Identity> {
+        self.peers.clone()
+    }
+
+    pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
+        self.exec_bft_op(BFTOp::NewPeer(self.identity()))
+    }
+
+    pub fn sync_from(&mut self, state: ReplicatedState<A>) {
+        // TODO: !! there is no validation this state right now.
+        // Suggestion. Periodic BFT agreement on the state snapshot, and procs store all ProofsOfAgreement msgs they've delivered since last snapshot.
+        // once the list of profs becomes large enough, collapse these proofs into the next snapshot.
+        //
+        // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
+        println!("{} syncing", self.identity());
+        self.peers.extend(state.peers);
+        self.delivered.merge(state.delivered);
+        self.received.merge(state.received);
+        self.algo.sync_from(state.algo_state);
+    }
+
+    pub fn exec_algo_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Vec<Packet<A::Op>> {
         if let Some(op) = f(&self.algo) {
-            let msg = Msg {
-                op,
-                dot: self.received.inc(self.identity()),
-            };
-            println!("[DSB] {} initiating bft for msg {:?}", self.identity(), msg);
-            let validation_request = Payload::RequestValidation { msg: msg };
-            self.broadcast(validation_request)
+            self.exec_bft_op(BFTOp::AlgoOp(op))
         } else {
-            println!("[DSB] bft op did not produce a message");
+            println!("[DSB] algo did not produce an op");
             vec![]
         }
     }
@@ -157,7 +196,18 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             Payload::ProofOfAgreement { msg, .. } => {
                 println!("[DSB] proof of agreement");
                 self.delivered.apply(msg.dot);
-                self.algo.apply(msg.op);
+
+                // Apply the op
+                // TODO: factor this out into an apply() method
+                match msg.op {
+                    BFTOp::NewPeer(id) => {
+                        self.peers.insert(id);
+                        // do we want to do some sort of onboarding here?
+                        // ie. maybe we can send this new peer our state
+                    }
+                    BFTOp::AlgoOp(op) => self.algo.apply(op),
+                };
+
                 vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
             }
         }
@@ -168,7 +218,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
                 (msg.dot == self.received.inc(from), "not the next msg"),
-                (self.algo.validate(&from, &msg.op), "failed bank validation"),
+                (
+                    self.validate_bft_op(&from, &msg.op),
+                    "failed bft op validation",
+                ),
             ],
             Payload::SignedValidated { msg, sig } => vec![
                 (self.verify_sig(&from, &msg, sig), "failed sig verification"),
@@ -202,18 +255,43 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .is_none()
     }
 
+    fn validate_bft_op(&self, from: &Identity, bft_op: &BFTOp<A::Op>) -> bool {
+        let validation_tests = match bft_op {
+            BFTOp::NewPeer(id) => vec![(!self.peers.contains(&id), "peer already exists")],
+            BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
+        };
+
+        validation_tests
+            .into_iter()
+            .find(|(is_valid, _msg)| !is_valid)
+            .map(|(_test, msg)| println!("[DSB/BFT_OP/INVALID] {} {:?}, {:?}", msg, bft_op, self))
+            .is_none()
+    }
+
     fn quorum(&self, n: usize) -> bool {
-        // To simplify things temporarily, we set quorum to be the entire network.
+        // TODO: To simplify things temporarily, we set quorum to be the entire network.
         // n * 3 >= self.peers.len() * 2
 
         n >= self.peers.len()
     }
 
+    fn exec_bft_op(&self, bft_op: BFTOp<A::Op>) -> Vec<Packet<A::Op>> {
+        let msg = Msg {
+            op: bft_op,
+            dot: self.received.inc(self.identity()),
+        };
+
+        println!("[DSB] {} initiating bft for msg {:?}", self.identity(), msg);
+        self.broadcast(Payload::RequestValidation { msg })
+    }
+
     fn broadcast(&self, msg: Payload<A::Op>) -> Vec<Packet<A::Op>> {
-        println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers);
+        println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers());
+
         self.peers
             .iter()
-            .map(|dest_p| self.send(*dest_p, msg.clone()))
+            .cloned()
+            .map(|dest_p| self.send(dest_p, msg.clone()))
             .collect()
     }
 

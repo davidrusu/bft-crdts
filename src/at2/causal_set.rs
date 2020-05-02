@@ -6,8 +6,8 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::hash::Hash;
 
-#[derive(Debug, Clone)]
-struct CausalSet<M: Hash> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CausalSet<M: Hash + Eq> {
     id: Identity,
     members: HashSet<M>,
 }
@@ -38,6 +38,7 @@ impl<M: Hash + Eq> CausalSet<M> {
 
 impl<M: Hash + Clone + Eq + std::fmt::Debug + Serialize> SecureBroadcastAlgorithm for CausalSet<M> {
     type Op = Op<M>;
+    type ReplicatedState = Self;
 
     fn new(id: Identity) -> Self {
         Self {
@@ -46,14 +47,18 @@ impl<M: Hash + Clone + Eq + std::fmt::Debug + Serialize> SecureBroadcastAlgorith
         }
     }
 
+    fn state(&self) -> Self::ReplicatedState {
+        self.clone()
+    }
+
     fn sync_from(&mut self, other: Self) {
         self.members.extend(other.members);
     }
 
     /// Protection against Byzantines
-    fn validate(&self, from: &Identity, op: &Self::Op) -> bool {
+    fn validate(&self, _from: &Identity, op: &Self::Op) -> bool {
         match op {
-            Op::Add(member) => true,
+            Op::Add(_member) => true,
             Op::Rm(member) => self.members.contains(member),
         }
     }
