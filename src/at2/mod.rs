@@ -1,8 +1,10 @@
 mod bank;
 mod bank_net;
+mod bft_orswot;
 mod causal_set;
 mod deterministic_secure_broadcast;
 mod direct_paper_impl;
 mod identity;
 mod net;
+mod orswot_net;
 mod traits;
