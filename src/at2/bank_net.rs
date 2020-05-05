@@ -71,7 +71,13 @@ mod tests {
 
                 for other_identity in net.identities() {
                     let balance = net.balance_from_pov_of_proc(&identity, &other_identity).unwrap();
-                    assert_eq!(remaining_balances.remove_item(&balance), Some(balance));
+
+                    let removed_balance = remaining_balances
+                        .iter()
+                        .position(|x| *x == balance)
+                        .map(|i| remaining_balances.remove(i))
+                        .unwrap();
+                    assert_eq!(removed_balance, balance);
                 }
                 assert_eq!(remaining_balances.len(), 0);
             }
@@ -251,8 +257,14 @@ mod tests {
                 let balance = net
                     .balance_from_pov_of_proc(&identity, &other_identity)
                     .unwrap();
+
                 // This balance should have been in our initial set
-                assert!(remaining_balances.remove_item(&balance).is_some());
+                let removed_balance = remaining_balances
+                    .iter()
+                    .position(|x| *x == balance)
+                    .map(|i| remaining_balances.remove(i))
+                    .unwrap();
+                assert_eq!(removed_balance, balance);
             }
 
             assert_eq!(remaining_balances.len(), 0);

@@ -14,5 +14,8 @@ serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
 
-[profile.release]
-debug = true
+[profile.test]
+# Property testing is a power hungry beast, we need to go as fast as we can
+opt-level = 3
+lto = "fat" # noticed a very significant speed up from enabling lto, perf improvement of 1m33s -> 10s
+incremental = false
