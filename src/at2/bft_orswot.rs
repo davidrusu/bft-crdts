@@ -50,7 +50,7 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
 
     fn validate(&self, from: &Identity, op: &Self::Op) -> bool {
         let validation_tests = match op {
-            orswot::Op::Add { dot, members } => vec![(
+            orswot::Op::Add { dot, members: _ } => vec![(
                 &dot.actor == from,
                 "Attempting to add with a dot different from the source proc",
             )],

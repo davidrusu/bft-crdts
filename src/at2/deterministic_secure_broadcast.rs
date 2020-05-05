@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use crate::at2::identity::{Identity, Sig};
 use crate::at2::traits::SecureBroadcastAlgorithm;
 
-use bincode;
 use crdts::{CmRDT, CvRDT, Dot, VClock};
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
@@ -78,15 +77,20 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
         let identity = Identity(keypair.public);
+
         let peers = if known_peers.is_empty() {
-            // This is the first node to join the network. We need to treat it special
+            // This is the genesis proc. It must be treated as a special case.
+            //
+            // Under normal conditions when a proc joins an existing network, it will only
+            // add itself to it's own peer set once it receives confirmation from the rest
+            // of the network that it has been accepted as a member of the network.
             std::iter::once(identity).collect()
         } else {
             known_peers
         };
 
         Self {
-            keypair: keypair,
+            keypair,
             msgs_waiting_for_signatures: HashMap::new(),
             algo: A::new(identity),
             peers,
@@ -188,7 +192,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.msgs_waiting_for_signatures[&msg].clone();
-                    self.broadcast(Payload::ProofOfAgreement { msg: msg, proof })
+                    self.broadcast(Payload::ProofOfAgreement { msg, proof })
                 } else {
                     vec![]
                 }

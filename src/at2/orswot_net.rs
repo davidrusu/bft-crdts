@@ -1,16 +1,15 @@
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::hash::Hash;
+
+use crdts::Orswot;
+use serde::Serialize;
+
 use crate::at2::bft_orswot::BFTOrswot;
-use crate::at2::deterministic_secure_broadcast::Packet;
-use crate::at2::identity::Identity;
 use crate::at2::net::Net;
 use crate::at2::traits::SecureBroadcastAlgorithm;
 
-use std::collections::HashSet;
-
-use crdts::Orswot;
-
-use serde::Serialize;
-
-impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> Net<BFTOrswot<M>> {}
+impl<M: Clone + Eq + Hash + Debug + Serialize> Net<BFTOrswot<M>> {}
 
 #[cfg(test)]
 mod tests {
@@ -27,9 +26,8 @@ mod tests {
             for _ in 0..n_procs {
                 let id = net.initialize_proc();
 
-                net.run_packets_to_completion(
-                    net.on_proc(&id, |p| p.request_membership()).unwrap(),
-                );
+                let packets_to_req_membership = net.on_proc(&id, |p| p.request_membership()).unwrap();
+                net.run_packets_to_completion(packets_to_req_membership);
                 net.anti_entropy();
             }
 
@@ -77,7 +75,7 @@ mod tests {
             let mut model = HashSet::new();
 
             let identities_loop = net.identities().into_iter().collect::<Vec<_>>().into_iter().cycle();
-            for (i, (member, adding)) in identities_loop.zip(members.clone().into_iter()) {
+            for (i, (member, adding)) in identities_loop.zip(members.into_iter()) {
                 if adding {
                     model.insert(member.clone());
                     net.run_packets_to_completion(
