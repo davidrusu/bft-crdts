@@ -55,11 +55,19 @@ mod tests {
             for balance in balances.iter().cloned() {
                 let identity = net.initialize_proc();
 
-                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
-                net.anti_entropy();
+                let member_request_packets = net.on_proc(
+                    &identity,
+                    |p| p.request_membership()
+                ).unwrap();
+                net.run_packets_to_completion(member_request_packets);
+
+                assert!(net.members().contains(&identity)); // The process is now a member
+
+                net.anti_entropy(); // We onboard the new process by running a round of anti-entropy
 
                 // TODO: add a test where the initiating identity is different from the owner account
-                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
+                let new_bank_account_packets = net.open_account(identity, identity, balance).unwrap();
+                net.run_packets_to_completion(new_bank_account_packets);
             }
 
             assert!(net.members_are_in_agreement());
