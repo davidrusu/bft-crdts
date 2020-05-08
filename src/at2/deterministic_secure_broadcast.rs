@@ -156,24 +156,15 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             packet.source,
             self.identity()
         );
-        if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
-            println!(
-                "[DSB] Msg failed verification {}->{}",
-                packet.source,
-                self.identity(),
-            );
-            return vec![];
-        }
 
-        if !self.validate_payload(packet.source, &packet.payload) {
-            println!(
-                "[DSB/BFT] Msg failed validation {}->{}",
-                packet.source,
-                self.identity()
-            );
-            return vec![];
+        if self.validate_packet(&packet) {
+            self.process_packet(packet)
+        } else {
+            vec![]
         }
+    }
 
+    fn process_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         match packet.payload {
             Payload::RequestValidation { msg } => {
                 println!("[DSB] request for validation");
@@ -222,6 +213,26 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 // here so that the source knows that honest procs have applied the transaction
                 vec![]
             }
+        }
+    }
+
+    fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
+        if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
+            println!(
+                "[DSB/SIG] Msg failed verification {}->{}",
+                packet.source,
+                self.identity(),
+            );
+            false
+        } else if !self.validate_payload(packet.source, &packet.payload) {
+            println!(
+                "[DSB/BFT] Msg failed validation {}->{}",
+                packet.source,
+                self.identity()
+            );
+            false
+        } else {
+            true
         }
     }
 
