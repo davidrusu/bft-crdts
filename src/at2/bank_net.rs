@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
 
-        assert_eq!(net.n_packets, 85);
+        assert_eq!(net.n_packets, 79);
     }
 
     #[test]
@@ -412,6 +412,8 @@ mod tests {
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
+
+            assert!(net.members_are_in_agreement());
         }
 
         let identities: Vec<_> = net.identities().into_iter().collect();
@@ -447,7 +449,7 @@ mod tests {
             (b_delta == a_init_balance && c_delta == 0)
                 || (b_delta == 0 && c_delta == a_init_balance)
         );
-        assert_eq!(net.n_packets, 40);
+        assert_eq!(net.n_packets, 42);
     }
 
     #[test]
@@ -520,6 +522,6 @@ mod tests {
         assert_eq!(b_final_balance, 2);
         assert_eq!(c_final_balance, 3);
 
-        assert_eq!(net.n_packets, 61);
+        assert_eq!(net.n_packets, 58);
     }
 }

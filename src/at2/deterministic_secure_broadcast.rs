@@ -10,6 +10,8 @@ use rand::rngs::OsRng;
 use serde::Serialize;
 use sha2::Sha512;
 
+// TODO: rename IDENTITY to ACTOR
+
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     // The identity of a process is it's keypair
@@ -196,6 +198,13 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             }
             Payload::ProofOfAgreement { msg, .. } => {
                 println!("[DSB] proof of agreement");
+                // We may not have been in the subset of members to validate this clock
+                // so we may not have had the chance to increment received. We must bring
+                // received up to this msg's timestamp.
+                //
+                // Otherwise we won't be able to validate any future messages
+                // from this source.
+                self.received.apply(msg.dot);
                 self.delivered.apply(msg.dot);
 
                 // Apply the op
@@ -306,11 +315,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn quorum(&self, n: usize) -> bool {
-        // TODO: We don't have anti-entropy fully worked out yet so to simplify things,
-        // lets wait for the entire network to sign our messages.
-        //
-        // n * 3 >= self.peers.len() * 2
-        n >= self.peers.len()
+        n * 3 >= self.peers.len() * 2
     }
 
     fn broadcast(&self, payload: Payload<A::Op>) -> Vec<Packet<A::Op>> {
