@@ -160,6 +160,16 @@ impl SecureBroadcastAlgorithm for Bank {
                     "Sender initiated transfer on behalf of other proc",
                 ),
                 (
+                    self.replicated
+                        .initial_balances
+                        .contains_key(&transfer.from),
+                    "From account does not exist",
+                ),
+                (
+                    self.replicated.initial_balances.contains_key(&transfer.to),
+                    "To account does not exist",
+                ),
+                (
                     self.balance(from) >= transfer.amount,
                     "Sender has insufficient funds",
                 ),
@@ -167,8 +177,6 @@ impl SecureBroadcastAlgorithm for Bank {
                     transfer.deps.is_subset(&self.history(from)),
                     "Missing dependent ops",
                 ),
-                // TODO: ensure from has an account
-                // TODO: ensure to has an account
             ],
             Op::OpenAccount { owner, balance: _ } => vec![
                 (
