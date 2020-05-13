@@ -207,6 +207,10 @@ impl SecureBroadcastAlgorithm for Bank {
                     .or_default()
                     .insert(transfer.clone());
 
+                if transfer.to == self.id {
+                    self.deps.insert(transfer.clone());
+                }
+
                 if transfer.from == self.id {
                     // In the paper, deps are cleared after the broadcast completes in
                     // self.transfer.
