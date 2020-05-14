@@ -3,11 +3,16 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use ed25519_dalek::{PublicKey, Signature};
-use hex;
 use serde::Serialize;
 
-#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
+#[derive(Eq, Clone, Copy, Serialize)]
 pub struct Identity(pub PublicKey);
+
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Hash for Identity {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -40,8 +45,14 @@ impl fmt::Debug for Identity {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
+#[derive(Eq, Clone, Copy, Serialize)]
 pub struct Sig(pub Signature);
+
+impl PartialEq for Sig {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Hash for Sig {
     fn hash<H: Hasher>(&self, state: &mut H) {

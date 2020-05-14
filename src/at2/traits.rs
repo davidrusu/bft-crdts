@@ -1,10 +1,13 @@
-use crate::at2::identity::Identity;
+use std::fmt::Debug;
+use std::hash::Hash;
 
 use serde::Serialize;
 
-pub trait SecureBroadcastAlgorithm: Clone + std::fmt::Debug + Eq {
-    type Op: std::fmt::Debug + Clone + std::hash::Hash + std::cmp::Eq + Serialize;
-    type ReplicatedState: Clone + std::fmt::Debug + Eq;
+use crate::at2::identity::Identity;
+
+pub trait SecureBroadcastAlgorithm: Clone + Debug + Eq {
+    type Op: Debug + Clone + Hash + Eq + Serialize;
+    type ReplicatedState: Clone + Debug + Eq;
 
     /// initialize a new replica of this algorithm
     fn new(id: Identity) -> Self;

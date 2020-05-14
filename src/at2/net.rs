@@ -6,7 +6,7 @@ use crate::at2::traits::SecureBroadcastAlgorithm;
 
 #[derive(Debug)]
 pub struct Net<A: SecureBroadcastAlgorithm> {
-    pub procs: Vec<SecureBroadcastProc<A>>, // TODO: profile and make this a Map<Identity, SecureBroadcastProc> if it's too slow
+    pub procs: Vec<SecureBroadcastProc<A>>,
     pub n_packets: u64,
 }
 
@@ -18,8 +18,9 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         }
     }
 
+    /// The largest set of procs who mutually see each other as peers
+    /// are considered to be the network members.
     pub fn members(&self) -> HashSet<Identity> {
-        // the largest subset of procs that mutually see each other as peers
         self.procs
             .iter()
             .map(|proc| {
@@ -34,6 +35,12 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             .unwrap_or_default()
     }
 
+    /// Fetch the identities for each process in the network
+    pub fn identities(&self) -> HashSet<Identity> {
+        self.procs.iter().map(|p| p.identity()).collect()
+    }
+
+    /// Initialize a new process (NOTE: we do not request membership from the network automatically)
     pub fn initialize_proc(&mut self) -> Identity {
         let proc = SecureBroadcastProc::new(self.members());
         let id = proc.identity();
@@ -41,6 +48,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         id
     }
 
+    /// Execute arbitrary code on a proc (immutable)
     pub fn on_proc<V>(
         &self,
         id: &Identity,
@@ -49,6 +57,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         self.proc_from_id(id).map(|p| f(p))
     }
 
+    /// Execute arbitrary code on a proc (mutating)
     pub fn on_proc_mut<V>(
         &mut self,
         id: &Identity,
@@ -57,22 +66,25 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         self.proc_from_id_mut(id).map(|p| f(p))
     }
 
-    // TODO: inline these two methods if they continue to only be used by `on_proc*`
+    /// Get a (immutable) reference to a proc with the given identity.
     pub fn proc_from_id(&self, id: &Identity) -> Option<&SecureBroadcastProc<A>> {
         self.procs
             .iter()
             .find(|secure_p| &secure_p.identity() == id)
     }
 
+    /// Get a (mutable) reference to a proc with the given identity.
     pub fn proc_from_id_mut(&mut self, id: &Identity) -> Option<&mut SecureBroadcastProc<A>> {
         self.procs
             .iter_mut()
             .find(|secure_p| &secure_p.identity() == id)
     }
 
+    /// Perform anti-entropy corrections on the network.
+    /// Currently this is God mode implementations in that we don't
+    /// use message passing and we share process state directly.
     pub fn anti_entropy(&mut self) {
-        // TODO: this should be done through a message(packet) passing interface.
-        println!("[TEST_NET] anti_entropy");
+        // TODO: this should be done through a message passing interface.
 
         // For each proc, collect the procs who considers this proc it's peer.
         let mut peer_reverse_index: HashMap<Identity, HashSet<Identity>> = HashMap::new();
@@ -96,10 +108,9 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         }
     }
 
-    pub fn identities(&self) -> HashSet<Identity> {
-        self.procs.iter().map(|p| p.identity()).collect()
-    }
-
+    /// Delivers a given packet to it's target recipiant.
+    /// The recipiant, upon processing this packet, may produce it's own packets.
+    /// This next set of packets are returned to the caller.
     pub fn deliver_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
@@ -107,6 +118,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             .unwrap_or_default()
     }
 
+    /// Checks if all members of the network have converged to the same state.
     pub fn members_are_in_agreement(&self) -> bool {
         let mut member_states_iter = self
             .members()
@@ -117,10 +129,12 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         if let Some(reference_state) = member_states_iter.next() {
             member_states_iter.all(|s| s == reference_state)
         } else {
-            true
+            true // vacuously, there are no members
         }
     }
 
+    /// Convenience function to iteratively deliver all packets along with any packets
+    /// that may result from delivering a packet.
     pub fn run_packets_to_completion(&mut self, mut packets: Vec<Packet<A::Op>>) {
         while let Some(packet) = packets.pop() {
             packets.extend(self.deliver_packet(packet));

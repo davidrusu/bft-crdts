@@ -1,4 +1,4 @@
-#![feature(vec_remove_item)]
+#![deny(missing_docs)]
 
 use crdts::quickcheck::{Arbitrary, Gen};
 use crdts::{orswot, CmRDT, CvRDT, Dot, VClock};

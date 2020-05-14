@@ -55,11 +55,19 @@ mod tests {
             for balance in balances.iter().cloned() {
                 let identity = net.initialize_proc();
 
-                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
-                net.anti_entropy();
+                let member_request_packets = net.on_proc(
+                    &identity,
+                    |p| p.request_membership()
+                ).unwrap();
+                net.run_packets_to_completion(member_request_packets);
+
+                assert!(net.members().contains(&identity)); // The process is now a member
+
+                net.anti_entropy(); // We onboard the new process by running a round of anti-entropy
 
                 // TODO: add a test where the initiating identity is different from the owner account
-                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
+                let new_bank_account_packets = net.open_account(identity, identity, balance).unwrap();
+                net.run_packets_to_completion(new_bank_account_packets);
             }
 
             assert!(net.members_are_in_agreement());
@@ -71,16 +79,22 @@ mod tests {
 
                 for other_identity in net.identities() {
                     let balance = net.balance_from_pov_of_proc(&identity, &other_identity).unwrap();
-                    assert_eq!(remaining_balances.remove_item(&balance), Some(balance));
+
+                    let removed_balance = remaining_balances
+                        .iter()
+                        .position(|x| *x == balance)
+                        .map(|i| remaining_balances.remove(i))
+                        .unwrap();
+                    assert_eq!(removed_balance, balance);
                 }
-                assert_eq!(remaining_balances.len(), 0);
+                assert_eq!(remaining_balances, vec![]);
             }
 
             TestResult::passed()
         }
 
         fn properties_of_a_single_transfer(balances: Vec<Money>, initiator_idx: usize, from_idx: usize, to_idx: usize, amount: Money) -> TestResult {
-            if balances.len() == 0 || balances.len() > 7 {
+            if balances.is_empty() || balances.len() > 7 {
                 return TestResult::discard()
             }
 
@@ -138,7 +152,7 @@ mod tests {
 
 
         fn protection_against_double_spend(balances: Vec<Money>, packet_interleave: Vec<usize>) -> TestResult {
-            if balances.len() < 3 || balances.len() > 7 || packet_interleave.len() == 0 {
+            if balances.len() < 3 || balances.len() > 7 || packet_interleave.is_empty() {
                 return TestResult::discard();
             }
 
@@ -168,7 +182,7 @@ mod tests {
             let mut packet_queue: Vec<Packet<Op>> = Vec::new();
 
             // Interleave the initial broadcast packets
-            while first_broadcast_packets.len() > 0 || second_broadcast_packets.len() > 0 {
+            while !first_broadcast_packets.is_empty() || !second_broadcast_packets.is_empty() {
                 let packet_position = packet_interleave[packet_number % packet_interleave.len()];
                 let packet = if packet_position % 2 == 0 {
                     first_broadcast_packets.pop().unwrap_or_else(|| second_broadcast_packets.pop().unwrap())
@@ -220,10 +234,10 @@ mod tests {
     fn there_is_agreement_on_initial_balances_qc1() {
         // Quickcheck found some problems with an earlier version of the BFT onboarding logic.
         // This is a direct copy of the quickcheck tests, together with the failing test vector.
-        let balances = vec![0, 0];
-
         let mut net = Net::new();
-        for balance in balances.iter().cloned() {
+
+        let balances = vec![0, 0];
+        for balance in balances.iter() {
             let identity = net.initialize_proc();
 
             let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
@@ -234,7 +248,7 @@ mod tests {
             net.anti_entropy();
 
             // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, balance).unwrap();
+            let mut packets = net.open_account(identity, identity, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -251,8 +265,14 @@ mod tests {
                 let balance = net
                     .balance_from_pov_of_proc(&identity, &other_identity)
                     .unwrap();
+
                 // This balance should have been in our initial set
-                assert!(remaining_balances.remove_item(&balance).is_some());
+                let removed_balance = remaining_balances
+                    .iter()
+                    .position(|x| *x == balance)
+                    .map(|i| remaining_balances.remove(i))
+                    .unwrap();
+                assert_eq!(removed_balance, balance);
             }
 
             assert_eq!(remaining_balances.len(), 0);
@@ -264,7 +284,7 @@ mod tests {
     #[test]
     fn test_transfer_is_actually_moving_money_qc1() {
         let mut net = Net::new();
-        for balance in vec![0, 9] {
+        for balance in &[0, 9] {
             let identity = net.initialize_proc();
 
             let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
@@ -275,7 +295,7 @@ mod tests {
             net.anti_entropy();
 
             // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, balance).unwrap();
+            let mut packets = net.open_account(identity, identity, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -315,7 +335,7 @@ mod tests {
     #[test]
     fn test_causal_dependancy() {
         let mut net = Net::new();
-        for balance in vec![1000, 1000, 1000, 1000] {
+        for balance in &[1000, 1000, 1000, 1000] {
             let identity = net.initialize_proc();
 
             let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
@@ -326,7 +346,7 @@ mod tests {
             net.anti_entropy();
 
             // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, balance).unwrap();
+            let mut packets = net.open_account(identity, identity, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -371,13 +391,13 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
 
-        assert_eq!(net.n_packets, 85);
+        assert_eq!(net.n_packets, 79);
     }
 
     #[test]
     fn test_double_spend_qc2() {
         let mut net = Net::new();
-        for balance in vec![0, 0, 0] {
+        for balance in &[0, 0, 0] {
             let identity = net.initialize_proc();
 
             let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
@@ -388,10 +408,12 @@ mod tests {
             net.anti_entropy();
 
             // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, balance).unwrap();
+            let mut packets = net.open_account(identity, identity, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
+
+            assert!(net.members_are_in_agreement());
         }
 
         let identities: Vec<_> = net.identities().into_iter().collect();
@@ -427,7 +449,7 @@ mod tests {
             (b_delta == a_init_balance && c_delta == 0)
                 || (b_delta == 0 && c_delta == a_init_balance)
         );
-        assert_eq!(net.n_packets, 40);
+        assert_eq!(net.n_packets, 42);
     }
 
     #[test]
@@ -437,7 +459,7 @@ mod tests {
         // execute any transaction.
 
         let mut net = Net::new();
-        for balance in vec![2, 3, 4, 1] {
+        for balance in &[2, 3, 4, 1] {
             let identity = net.initialize_proc();
 
             let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
@@ -448,7 +470,7 @@ mod tests {
             net.anti_entropy();
 
             // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, balance).unwrap();
+            let mut packets = net.open_account(identity, identity, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -466,7 +488,7 @@ mod tests {
         let packet_interleave = vec![0, 0, 15, 9, 67, 99];
 
         // Interleave the initial broadcast packets
-        while first_broadcast_packets.len() > 0 || second_broadcast_packets.len() > 0 {
+        while !first_broadcast_packets.is_empty() || !second_broadcast_packets.is_empty() {
             let packet = if packet_interleave[packet_number % packet_interleave.len()] % 2 == 0 {
                 first_broadcast_packets
                     .pop()
@@ -500,6 +522,6 @@ mod tests {
         assert_eq!(b_final_balance, 2);
         assert_eq!(c_final_balance, 3);
 
-        assert_eq!(net.n_packets, 61);
+        assert_eq!(net.n_packets, 58);
     }
 }

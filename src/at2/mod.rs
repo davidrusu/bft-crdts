@@ -1,7 +1,12 @@
+/// Causal asset transfer algorithm described in AT2
 mod bank;
+
+/// Test net wrapping the Bank implementation
 mod bank_net;
+
+/// BFT Orswot algorithm
 mod bft_orswot;
-mod causal_set;
+
 mod deterministic_secure_broadcast;
 mod direct_paper_impl;
 mod identity;

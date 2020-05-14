@@ -4,29 +4,36 @@ use std::collections::{HashMap, HashSet};
 use crate::at2::identity::{Identity, Sig};
 use crate::at2::traits::SecureBroadcastAlgorithm;
 
-use bincode;
 use crdts::{CmRDT, CvRDT, Dot, VClock};
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
 use serde::Serialize;
 use sha2::Sha512;
 
+// TODO: rename IDENTITY to ACTOR
+
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
-    // This state is kept private to this process.
-    // We either don't want, or don't need the outside world to know about this state.
+    // The identity of a process is it's keypair
     keypair: Keypair,
-    msgs_waiting_for_signatures: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
 
-    // algo is partly private and partly replicated,
-    // A::ReplicatedState is the state that is replicated
+    // Msgs this process has initiated and is waiting on BFT agreement for from the network.
+    pending_proof: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
+
+    // The clock representing the most recently received messages from each process.
+    // These are messages that have been acknowledged but not yet
+    // This clock must at all times be greator or equal to the `delivered` clock.
+    received: VClock<Identity>,
+
+    // The clock representing the most recent msgs we've delivered to the underlying algorithm `algo`.
+    delivered: VClock<Identity>,
+
+    // The state of the algorithm that we are running BFT over.
+    // This can be the causal bank described in AT2, or it can be a CRDT.
     algo: A,
 
-    // This is the state that we expect all honest members of the network should agree on.
-    // It is actively shared through gossip/anti-entropy efforts.
+    // The set of members in this network.
     peers: HashSet<Identity>,
-    delivered: VClock<Identity>,
-    received: VClock<Identity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -34,7 +41,6 @@ pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
     algo_state: A::ReplicatedState,
     peers: HashSet<Identity>,
     delivered: VClock<Identity>,
-    received: VClock<Identity>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,8 +74,8 @@ pub struct Msg<Op> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 enum BFTOp<Op> {
-    NewPeer(Identity),
     // TODO: support peers leaving
+    MembershipNewPeer(Identity),
     AlgoOp(Op),
 }
 
@@ -78,16 +84,21 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
         let identity = Identity(keypair.public);
+
         let peers = if known_peers.is_empty() {
-            // This is the first node to join the network. We need to treat it special
+            // This is the genesis proc. It must be treated as a special case.
+            //
+            // Under normal conditions when a proc joins an existing network, it will only
+            // add itself to it's own peer set once it receives confirmation from the rest
+            // of the network that it has been accepted as a member of the network.
             std::iter::once(identity).collect()
         } else {
             known_peers
         };
 
         Self {
-            keypair: keypair,
-            msgs_waiting_for_signatures: HashMap::new(),
+            keypair,
+            pending_proof: HashMap::new(),
             algo: A::new(identity),
             peers,
             delivered: VClock::new(),
@@ -104,7 +115,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             algo_state: self.algo.state(),
             peers: self.peers.clone(),
             delivered: self.delivered.clone(),
-            received: self.received.clone(),
         }
     }
 
@@ -113,19 +123,19 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
-        self.exec_bft_op(BFTOp::NewPeer(self.identity()))
+        self.exec_bft_op(BFTOp::MembershipNewPeer(self.identity()))
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
         // TODO: !! there is no validation this state right now.
         // Suggestion. Periodic BFT agreement on the state snapshot, and procs store all ProofsOfAgreement msgs they've delivered since last snapshot.
-        // once the list of profs becomes large enough, collapse these proofs into the next snapshot.
+        // once the list of proofs becomes large enough, collapse these proofs into the next snapshot.
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
         println!("{} syncing", self.identity());
         self.peers.extend(state.peers);
-        self.delivered.merge(state.delivered);
-        self.received.merge(state.received);
+        self.delivered.merge(state.delivered.clone());
+        self.received.merge(state.delivered); // We advance received up to what we've delivered
         self.algo.sync_from(state.algo_state);
     }
 
@@ -148,59 +158,59 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             packet.source,
             self.identity()
         );
-        if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
-            println!(
-                "[DSB] Msg failed verification {}->{}",
-                packet.source,
-                self.identity(),
-            );
-            return vec![];
-        }
 
-        if !self.validate_payload(packet.source, &packet.payload) {
-            println!(
-                "[DSB/BFT] Msg failed validation {}->{}",
-                packet.source,
-                self.identity()
-            );
-            return vec![];
+        if self.validate_packet(&packet) {
+            self.process_packet(packet)
+        } else {
+            vec![]
         }
+    }
 
+    fn process_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         match packet.payload {
             Payload::RequestValidation { msg } => {
                 println!("[DSB] request for validation");
                 self.received.apply(msg.dot);
 
-                let msg_sig = self.sign(&msg);
-                let validation = Payload::SignedValidated { msg, sig: msg_sig };
+                // NOTE: we do not need to store this message, it will be sent back to us
+                // with the proof of agreement. Our signature will prevent tampering.
+                let sig = self.sign(&msg);
+                let validation = Payload::SignedValidated { msg, sig };
                 vec![self.send(packet.source, validation)]
             }
             Payload::SignedValidated { msg, sig } => {
                 println!("[DSB] signed validated");
-                self.msgs_waiting_for_signatures
+                self.pending_proof
                     .entry(msg.clone())
                     .or_default()
                     .insert(packet.source, sig);
 
-                let num_signatures = self.msgs_waiting_for_signatures[&msg].len();
+                let num_signatures = self.pending_proof[&msg].len();
 
                 if self.quorum(num_signatures) {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
-                    let proof = self.msgs_waiting_for_signatures[&msg].clone();
-                    self.broadcast(Payload::ProofOfAgreement { msg: msg, proof })
+                    let proof = self.pending_proof[&msg].clone();
+                    self.broadcast(Payload::ProofOfAgreement { msg, proof })
                 } else {
                     vec![]
                 }
             }
             Payload::ProofOfAgreement { msg, .. } => {
                 println!("[DSB] proof of agreement");
+                // We may not have been in the subset of members to validate this clock
+                // so we may not have had the chance to increment received. We must bring
+                // received up to this msg's timestamp.
+                //
+                // Otherwise we won't be able to validate any future messages
+                // from this source.
+                self.received.apply(msg.dot);
                 self.delivered.apply(msg.dot);
 
                 // Apply the op
                 // TODO: factor this out into an apply() method
                 match msg.op {
-                    BFTOp::NewPeer(id) => {
+                    BFTOp::MembershipNewPeer(id) => {
                         self.peers.insert(id);
                         // do we want to do some sort of onboarding here?
                         // ie. maybe we can send this new peer our state
@@ -208,8 +218,30 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     BFTOp::AlgoOp(op) => self.algo.apply(op),
                 };
 
-                vec![] // TODO: we must put in an ack here so that the source knows that honest procs have applied the transaction
+                // TODO: Once we relax our network assumptions, we must put in an ack
+                // here so that the source knows that honest procs have applied the transaction
+                vec![]
             }
+        }
+    }
+
+    fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
+        if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
+            println!(
+                "[DSB/SIG] Msg failed verification {}->{}",
+                packet.source,
+                self.identity(),
+            );
+            false
+        } else if !self.validate_payload(packet.source, &packet.payload) {
+            println!(
+                "[DSB/BFT] Msg failed validation {}->{}",
+                packet.source,
+                self.identity()
+            );
+            false
+        } else {
+            true
         }
     }
 
@@ -257,7 +289,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn validate_bft_op(&self, from: &Identity, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
-            BFTOp::NewPeer(id) => vec![(!self.peers.contains(&id), "peer already exists")],
+            BFTOp::MembershipNewPeer(id) => {
+                vec![(!self.peers.contains(&id), "peer already exists")]
+            }
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
         };
 
@@ -268,16 +302,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .is_none()
     }
 
-    fn quorum(&self, n: usize) -> bool {
-        // TODO: To simplify things temporarily, we set quorum to be the entire network.
-        // n * 3 >= self.peers.len() * 2
-
-        n >= self.peers.len()
-    }
-
     fn exec_bft_op(&self, bft_op: BFTOp<A::Op>) -> Vec<Packet<A::Op>> {
         let msg = Msg {
             op: bft_op,
+            // We use the received clock to allow for many operations from this process
+            // to be pending agreement at any one point in time.
             dot: self.received.inc(self.identity()),
         };
 
@@ -285,13 +314,17 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.broadcast(Payload::RequestValidation { msg })
     }
 
-    fn broadcast(&self, msg: Payload<A::Op>) -> Vec<Packet<A::Op>> {
+    fn quorum(&self, n: usize) -> bool {
+        n * 3 >= self.peers.len() * 2
+    }
+
+    fn broadcast(&self, payload: Payload<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers());
 
         self.peers
             .iter()
             .cloned()
-            .map(|dest_p| self.send(dest_p, msg.clone()))
+            .map(|dest_p| self.send(dest_p, payload.clone()))
             .collect()
     }
 
@@ -305,15 +338,15 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn sign(&self, msg: impl Serialize) -> Sig {
-        let msg_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-        let msg_sig = self.keypair.sign::<Sha512>(&msg_bytes);
+    fn sign(&self, blob: impl Serialize) -> Sig {
+        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
+        let blob_sig = self.keypair.sign::<Sha512>(&blob_bytes);
 
-        Sig(msg_sig)
+        Sig(blob_sig)
     }
 
-    fn verify_sig(&self, source: &Identity, msg: impl Serialize, sig: &Sig) -> bool {
-        let msg_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-        source.0.verify::<Sha512>(&msg_bytes, &sig.0).is_ok()
+    fn verify_sig(&self, source: &Identity, blob: impl Serialize, sig: &Sig) -> bool {
+        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
+        source.0.verify::<Sha512>(&blob_bytes, &sig.0).is_ok()
     }
 }
