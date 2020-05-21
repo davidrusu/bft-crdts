@@ -1,6 +1,6 @@
 # Byzantine Fault Tolerant Eventually Consistent Algorithms
 
-**This research was sponsored by [Maidsafe](https://maidsafe.net/) and released to the public at the request of Maidsafe. (Licensed under MIT/BSD-3)**
+**This research was funded by [Maidsafe](https://maidsafe.net/) and open sourced at their request. (MIT/BSD-3)**
 
 The repository contains a byzantine fault tolerant systems for achieving network agreement over eventually consistent algorithms.
 
@@ -85,8 +85,10 @@ pub trait SecureBroadcastAlgorithm: Clone + Debug + Eq {
 }
 ```
 
+![Onion Layers](./assets/onion_layers.png)
+
 ## References + Prior Art
-[AT2: Asynchronous Trustworthy Transfers](https://arxiv.org/pdf/1812.10844.pdf)
-[Secure Reliable Multicast Protocols in a WAN](https://dahliamalkhi.files.wordpress.com/2016/08/wansecure-multicast-icdcs97.pdf)
-[Byzantine Fault Tolerance for Services with Commutative Operations](https://academic.csuohio.edu/zhao_w/papers/scc2014zhao.pdf)
-[Concise Version Vectors in WinFS](https://dahliamalkhi.files.wordpress.com/2016/08/winfs-version-vectors-disc2005.pdf)
+- [AT2: Asynchronous Trustworthy Transfers](https://arxiv.org/pdf/1812.10844.pdf)
+- [Secure Reliable Multicast Protocols in a WAN](https://dahliamalkhi.files.wordpress.com/2016/08/wansecure-multicast-icdcs97.pdf)
+- [Byzantine Fault Tolerance for Services with Commutative Operations](https://academic.csuohio.edu/zhao_w/papers/scc2014zhao.pdf)
+- [Concise Version Vectors in WinFS](https://dahliamalkhi.files.wordpress.com/2016/08/winfs-version-vectors-disc2005.pdf)
