@@ -1,23 +1,23 @@
 use crdts::{orswot, CmRDT, CvRDT};
 
-use crate::at2::identity::Identity;
-use crate::at2::traits::SecureBroadcastAlgorithm;
+use crate::actor::Actor;
+use crate::traits::SecureBroadcastAlgorithm;
 
 use serde::Serialize;
 
 #[derive(Debug, Serialize, PartialEq, Eq, Clone)]
 pub struct BFTOrswot<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> {
-    id: Identity,
-    orswot: orswot::Orswot<M, Identity>,
+    actor: Actor,
+    orswot: orswot::Orswot<M, Actor>,
 }
 
 impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M> {
-    pub fn add(&self, member: M) -> orswot::Op<M, Identity> {
-        let add_ctx = self.orswot.read_ctx().derive_add_ctx(self.id);
+    pub fn add(&self, member: M) -> orswot::Op<M, Actor> {
+        let add_ctx = self.orswot.read_ctx().derive_add_ctx(self.actor);
         self.orswot.add(member, add_ctx)
     }
 
-    pub fn rm(&self, member: M) -> Option<orswot::Op<M, Identity>> {
+    pub fn rm(&self, member: M) -> Option<orswot::Op<M, Actor>> {
         let contains_ctx = self.orswot.contains(&member);
         if contains_ctx.val {
             Some(self.orswot.rm(member, contains_ctx.derive_rm_ctx()))
@@ -30,12 +30,12 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M>
 impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadcastAlgorithm
     for BFTOrswot<M>
 {
-    type Op = orswot::Op<M, Identity>;
-    type ReplicatedState = orswot::Orswot<M, Identity>;
+    type Op = orswot::Op<M, Actor>;
+    type ReplicatedState = orswot::Orswot<M, Actor>;
 
-    fn new(id: Identity) -> Self {
+    fn new(actor: Actor) -> Self {
         BFTOrswot {
-            id,
+            actor,
             orswot: orswot::Orswot::new(),
         }
     }
@@ -48,7 +48,7 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
         self.orswot.merge(other);
     }
 
-    fn validate(&self, from: &Identity, op: &Self::Op) -> bool {
+    fn validate(&self, from: &Actor, op: &Self::Op) -> bool {
         let validation_tests = match op {
             orswot::Op::Add { dot, members: _ } => vec![
                 (

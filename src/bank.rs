@@ -2,24 +2,24 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
-use crate::at2::identity::Identity;
-use crate::at2::traits::SecureBroadcastAlgorithm;
+use crate::actor::Actor;
+use crate::traits::SecureBroadcastAlgorithm;
 
-// TODO: introduce decomp. of Account from Identity
-// pub type Account = Identity; // In the paper, Identity and Account are synonymous
+// TODO: introduce decomp. of Account from Actor
+// pub type Account = Actor; // In the paper, Actor and Account are synonymous
 
 pub type Money = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub enum Op {
     Transfer(Transfer), // Split out Transfer into it's own struct to get some more type safety in Bank struct
-    OpenAccount { owner: Identity, balance: Money },
+    OpenAccount { owner: Actor, balance: Money },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Transfer {
-    from: Identity,
-    to: Identity,
+    from: Actor,
+    to: Actor,
     amount: Money,
 
     /// set of transactions that need to be applied before this transfer can be validated
@@ -29,7 +29,7 @@ pub struct Transfer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bank {
-    id: Identity,
+    id: Actor,
     // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,
 
@@ -40,47 +40,43 @@ pub struct Bank {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BankState {
     // When a new account is created, it will be given an initial balance
-    initial_balances: HashMap<Identity, Money>,
+    initial_balances: HashMap<Actor, Money>,
 
-    // Set of all transfers impacting a given identity
-    hist: HashMap<Identity, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
+    // Set of all transfers impacting a given actor
+    hist: HashMap<Actor, BTreeSet<Transfer>>, // TODO: Opening an account should be part of history
 }
 
 impl Bank {
-    pub fn open_account(&self, owner: Identity, balance: Money) -> Op {
+    pub fn open_account(&self, owner: Actor, balance: Money) -> Op {
         Op::OpenAccount { owner, balance }
     }
 
-    pub fn initial_balance(&self, identity: &Identity) -> Money {
+    pub fn initial_balance(&self, actor: &Actor) -> Money {
         self.replicated
             .initial_balances
-            .get(&identity)
+            .get(&actor)
             .cloned()
-            .unwrap_or_else(|| panic!("[ERROR] No initial balance for {}", identity))
+            .unwrap_or_else(|| panic!("[ERROR] No initial balance for {}", actor))
     }
 
-    pub fn balance(&self, identity: &Identity) -> Money {
-        // TODO: in the paper, when we read from an identity, we union the identity
+    pub fn balance(&self, actor: &Actor) -> Money {
+        // TODO: in the paper, when we read from an actor, we union the actor
         //       history with the deps, I don't see a use for this since anything
-        //       in deps is already in the identity history. Think this through a
+        //       in deps is already in the actor history. Think this through a
         //       bit more carefully.
-        let h = self.history(identity);
+        let h = self.history(actor);
 
         let outgoing: Money = h
             .iter()
-            .filter(|t| &t.from == identity)
+            .filter(|t| &t.from == actor)
             .map(|t| t.amount)
             .sum();
-        let incoming: Money = h
-            .iter()
-            .filter(|t| &t.to == identity)
-            .map(|t| t.amount)
-            .sum();
+        let incoming: Money = h.iter().filter(|t| &t.to == actor).map(|t| t.amount).sum();
 
         // We compute differences in a larger space since we need to move to signed numbers
         // and hence we lose a bit.
         let balance_delta: i128 = (incoming as i128) - (outgoing as i128);
-        let balance: i128 = self.initial_balance(identity) as i128 + balance_delta;
+        let balance: i128 = self.initial_balance(actor) as i128 + balance_delta;
 
         assert!(balance >= 0); // sanity check that we haven't violated our balance constraint
         assert!(balance <= Money::max_value() as i128); // sanity check that it's safe to downcast
@@ -88,15 +84,15 @@ impl Bank {
         balance as Money
     }
 
-    fn history(&self, identity: &Identity) -> BTreeSet<Transfer> {
+    fn history(&self, actor: &Actor) -> BTreeSet<Transfer> {
         self.replicated
             .hist
-            .get(&identity)
+            .get(&actor)
             .cloned()
             .unwrap_or_default()
     }
 
-    pub fn transfer(&self, from: Identity, to: Identity, amount: Money) -> Option<Op> {
+    pub fn transfer(&self, from: Actor, to: Actor, amount: Money) -> Option<Op> {
         let balance = self.balance(&from);
         // TODO: we should leave this validation to the self.validate logic, no need to duplicate it here
         if balance < amount {
@@ -121,7 +117,7 @@ impl SecureBroadcastAlgorithm for Bank {
     type Op = Op;
     type ReplicatedState = BankState;
 
-    fn new(id: Identity) -> Self {
+    fn new(id: Actor) -> Self {
         Bank {
             id,
             deps: Default::default(),
@@ -152,7 +148,7 @@ impl SecureBroadcastAlgorithm for Bank {
     }
 
     /// Protection against Byzantines
-    fn validate(&self, from: &Identity, op: &Op) -> bool {
+    fn validate(&self, from: &Actor, op: &Op) -> bool {
         let validation_tests = match op {
             Op::Transfer(transfer) => vec![
                 (

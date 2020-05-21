@@ -1,8 +1,8 @@
 /// An implementation of deterministic SecureBroadcast.
 use std::collections::{HashMap, HashSet};
 
-use crate::at2::identity::{Identity, Sig};
-use crate::at2::traits::SecureBroadcastAlgorithm;
+use crate::actor::{Actor, Sig};
+use crate::traits::SecureBroadcastAlgorithm;
 
 use crdts::{CmRDT, CvRDT, Dot, VClock};
 use ed25519_dalek::Keypair;
@@ -10,43 +10,41 @@ use rand::rngs::OsRng;
 use serde::Serialize;
 use sha2::Sha512;
 
-// TODO: rename IDENTITY to ACTOR
-
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     // The identity of a process is it's keypair
     keypair: Keypair,
 
     // Msgs this process has initiated and is waiting on BFT agreement for from the network.
-    pending_proof: HashMap<Msg<A::Op>, HashMap<Identity, Sig>>,
+    pending_proof: HashMap<Msg<A::Op>, HashMap<Actor, Sig>>,
 
     // The clock representing the most recently received messages from each process.
     // These are messages that have been acknowledged but not yet
     // This clock must at all times be greator or equal to the `delivered` clock.
-    received: VClock<Identity>,
+    received: VClock<Actor>,
 
     // The clock representing the most recent msgs we've delivered to the underlying algorithm `algo`.
-    delivered: VClock<Identity>,
+    delivered: VClock<Actor>,
 
     // The state of the algorithm that we are running BFT over.
     // This can be the causal bank described in AT2, or it can be a CRDT.
     algo: A,
 
     // The set of members in this network.
-    peers: HashSet<Identity>,
+    peers: HashSet<Actor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
     algo_state: A::ReplicatedState,
-    peers: HashSet<Identity>,
-    delivered: VClock<Identity>,
+    peers: HashSet<Actor>,
+    delivered: VClock<Actor>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Packet<Op> {
-    pub source: Identity,
-    pub dest: Identity,
+    pub source: Actor,
+    pub dest: Actor,
     pub payload: Payload<Op>,
     pub sig: Sig,
 }
@@ -62,28 +60,28 @@ pub enum Payload<Op> {
     },
     ProofOfAgreement {
         msg: Msg<Op>,
-        proof: HashMap<Identity, Sig>,
+        proof: HashMap<Actor, Sig>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 pub struct Msg<Op> {
     op: BFTOp<Op>,
-    dot: Dot<Identity>,
+    dot: Dot<Actor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 enum BFTOp<Op> {
     // TODO: support peers leaving
-    MembershipNewPeer(Identity),
+    MembershipNewPeer(Actor),
     AlgoOp(Op),
 }
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
-    pub fn new(known_peers: HashSet<Identity>) -> Self {
+    pub fn new(known_peers: HashSet<Actor>) -> Self {
         let mut csprng = OsRng::new().unwrap();
         let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
-        let identity = Identity(keypair.public);
+        let actor = Actor(keypair.public);
 
         let peers = if known_peers.is_empty() {
             // This is the genesis proc. It must be treated as a special case.
@@ -91,7 +89,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             // Under normal conditions when a proc joins an existing network, it will only
             // add itself to it's own peer set once it receives confirmation from the rest
             // of the network that it has been accepted as a member of the network.
-            std::iter::once(identity).collect()
+            std::iter::once(actor).collect()
         } else {
             known_peers
         };
@@ -99,15 +97,15 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         Self {
             keypair,
             pending_proof: HashMap::new(),
-            algo: A::new(identity),
+            algo: A::new(actor),
             peers,
             delivered: VClock::new(),
             received: VClock::new(),
         }
     }
 
-    pub fn identity(&self) -> Identity {
-        Identity(self.keypair.public)
+    pub fn actor(&self) -> Actor {
+        Actor(self.keypair.public)
     }
 
     pub fn state(&self) -> ReplicatedState<A> {
@@ -118,12 +116,12 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    pub fn peers(&self) -> HashSet<Identity> {
+    pub fn peers(&self) -> HashSet<Actor> {
         self.peers.clone()
     }
 
     pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
-        self.exec_bft_op(BFTOp::MembershipNewPeer(self.identity()))
+        self.exec_bft_op(BFTOp::MembershipNewPeer(self.actor()))
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
@@ -132,7 +130,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         // once the list of proofs becomes large enough, collapse these proofs into the next snapshot.
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
-        println!("{} syncing", self.identity());
+        println!("{} syncing", self.actor());
         self.peers.extend(state.peers);
         self.delivered.merge(state.delivered.clone());
         self.received.merge(state.delivered); // We advance received up to what we've delivered
@@ -156,7 +154,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         println!(
             "[DSB] handling packet from {}->{}",
             packet.source,
-            self.identity()
+            self.actor()
         );
 
         if self.validate_packet(&packet) {
@@ -230,14 +228,14 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             println!(
                 "[DSB/SIG] Msg failed verification {}->{}",
                 packet.source,
-                self.identity(),
+                self.actor(),
             );
             false
         } else if !self.validate_payload(packet.source, &packet.payload) {
             println!(
                 "[DSB/BFT] Msg failed validation {}->{}",
                 packet.source,
-                self.identity()
+                self.actor()
             );
             false
         } else {
@@ -245,7 +243,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn validate_payload(&self, from: Identity, payload: &Payload<A::Op>) -> bool {
+    fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
@@ -257,7 +255,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             ],
             Payload::SignedValidated { msg, sig } => vec![
                 (self.verify_sig(&from, &msg, sig), "failed sig verification"),
-                (self.identity() == msg.dot.actor, "validation not requested"),
+                (self.actor() == msg.dot.actor, "validation not requested"),
             ],
             Payload::ProofOfAgreement { msg, proof } => vec![
                 (
@@ -287,10 +285,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .is_none()
     }
 
-    fn validate_bft_op(&self, from: &Identity, bft_op: &BFTOp<A::Op>) -> bool {
+    fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
-            BFTOp::MembershipNewPeer(id) => {
-                vec![(!self.peers.contains(&id), "peer already exists")]
+            BFTOp::MembershipNewPeer(actor) => {
+                vec![(!self.peers.contains(&actor), "peer already exists")]
             }
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
         };
@@ -307,10 +305,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             op: bft_op,
             // We use the received clock to allow for many operations from this process
             // to be pending agreement at any one point in time.
-            dot: self.received.inc(self.identity()),
+            dot: self.received.inc(self.actor()),
         };
 
-        println!("[DSB] {} initiating bft for msg {:?}", self.identity(), msg);
+        println!("[DSB] {} initiating bft for msg {:?}", self.actor(), msg);
         self.broadcast(Payload::RequestValidation { msg })
     }
 
@@ -319,7 +317,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn broadcast(&self, payload: Payload<A::Op>) -> Vec<Packet<A::Op>> {
-        println!("[DSB] broadcasting {}->{:?}", self.identity(), self.peers());
+        println!("[DSB] broadcasting {}->{:?}", self.actor(), self.peers());
 
         self.peers
             .iter()
@@ -328,10 +326,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .collect()
     }
 
-    fn send(&self, dest: Identity, payload: Payload<A::Op>) -> Packet<A::Op> {
+    fn send(&self, dest: Actor, payload: Payload<A::Op>) -> Packet<A::Op> {
         let sig = self.sign(&payload);
         Packet {
-            source: self.identity(),
+            source: self.actor(),
             dest,
             payload,
             sig,
@@ -345,7 +343,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         Sig(blob_sig)
     }
 
-    fn verify_sig(&self, source: &Identity, blob: impl Serialize, sig: &Sig) -> bool {
+    fn verify_sig(&self, source: &Actor, blob: impl Serialize, sig: &Sig) -> bool {
         let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
         source.0.verify::<Sha512>(&blob_bytes, &sig.0).is_ok()
     }

@@ -1,24 +1,24 @@
-use crate::at2::bank::{Bank, Money, Op};
-use crate::at2::deterministic_secure_broadcast::Packet;
-use crate::at2::identity::Identity;
-use crate::at2::net::Net;
+use crate::actor::Actor;
+use crate::bank::{Bank, Money, Op};
+use crate::deterministic_secure_broadcast::Packet;
+use crate::net::Net;
 
 impl Net<Bank> {
-    fn find_identity_with_balance(&self, balance: Money) -> Option<Identity> {
-        self.identities()
+    fn find_actor_with_balance(&self, balance: Money) -> Option<Actor> {
+        self.actors()
             .iter()
             .cloned()
-            .find(|i| self.balance_from_pov_of_proc(i, i).unwrap() == balance)
+            .find(|a| self.balance_from_pov_of_proc(a, a).unwrap() == balance)
     }
 
-    fn balance_from_pov_of_proc(&self, pov: &Identity, account: &Identity) -> Option<Money> {
+    fn balance_from_pov_of_proc(&self, pov: &Actor, account: &Actor) -> Option<Money> {
         self.on_proc(pov, |p| p.read_state(|bank| bank.balance(account)))
     }
 
     fn open_account(
         &self,
-        initiating_proc: Identity,
-        bank_owner: Identity,
+        initiating_proc: Actor,
+        bank_owner: Actor,
         initial_balance: Money,
     ) -> Option<Vec<Packet<Op>>> {
         self.on_proc(&initiating_proc, |p| {
@@ -28,9 +28,9 @@ impl Net<Bank> {
 
     fn transfer(
         &self,
-        initiating_proc: Identity,
-        from: Identity,
-        to: Identity,
+        initiating_proc: Actor,
+        from: Actor,
+        to: Actor,
         amount: Money,
     ) -> Option<Vec<Packet<Op>>> {
         self.on_proc(&initiating_proc, |p| {
@@ -53,32 +53,32 @@ mod tests {
 
             let mut net = Net::new();
             for balance in balances.iter().cloned() {
-                let identity = net.initialize_proc();
+                let actor = net.initialize_proc();
 
                 let member_request_packets = net.on_proc(
-                    &identity,
+                    &actor,
                     |p| p.request_membership()
                 ).unwrap();
                 net.run_packets_to_completion(member_request_packets);
 
-                assert!(net.members().contains(&identity)); // The process is now a member
+                assert!(net.members().contains(&actor)); // The process is now a member
 
                 net.anti_entropy(); // We onboard the new process by running a round of anti-entropy
 
-                // TODO: add a test where the initiating identity is different from the owner account
-                let new_bank_account_packets = net.open_account(identity, identity, balance).unwrap();
+                // TODO: add a test where the initiating actor is different from the owner account
+                let new_bank_account_packets = net.open_account(actor, actor, balance).unwrap();
                 net.run_packets_to_completion(new_bank_account_packets);
             }
 
             assert!(net.members_are_in_agreement());
 
             // make sure that all balances in the network appear in the initial list of balances
-            // and all balances in the initial list appear in the network (full identity <-> balance correspondance check)
-            for identity in net.identities() {
+            // and all balances in the initial list appear in the network (full actor <-> balance correspondance check)
+            for actor in net.actors() {
                 let mut remaining_balances = balances.clone();
 
-                for other_identity in net.identities() {
-                    let balance = net.balance_from_pov_of_proc(&identity, &other_identity).unwrap();
+                for other_actor in net.actors() {
+                    let balance = net.balance_from_pov_of_proc(&actor, &other_actor).unwrap();
 
                     let removed_balance = remaining_balances
                         .iter()
@@ -100,20 +100,20 @@ mod tests {
 
             let mut net = Net::new();
             for balance in balances.iter().cloned() {
-                let identity = net.initialize_proc();
+                let actor = net.initialize_proc();
 
-                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
+                net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
                 net.anti_entropy();
 
-                // TODO: add a test where the initiating identity is different from hte owner account
-                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
+                // TODO: add a test where the initiating actor is different from hte owner account
+                net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
             }
 
-            let identities: Vec<Identity> = net.identities().into_iter().collect();
+            let actors: Vec<Actor> = net.actors().into_iter().collect();
 
-            let initiator = identities[initiator_idx % identities.len()];
-            let from = identities[from_idx % identities.len()];
-            let to = identities[to_idx % identities.len()];
+            let initiator = actors[initiator_idx % actors.len()];
+            let from = actors[from_idx % actors.len()];
+            let to = actors[to_idx % actors.len()];
 
             let initial_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
             let initial_to_balance = net.balance_from_pov_of_proc(&initiator, &to).unwrap();
@@ -158,18 +158,18 @@ mod tests {
 
             let mut net = Net::new();
             for balance in balances.iter().cloned() {
-                let identity = net.initialize_proc();
+                let actor = net.initialize_proc();
 
-                net.run_packets_to_completion(net.on_proc(&identity, |p| p.request_membership()).unwrap());
+                net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
                 net.anti_entropy();
-                // TODO: add a test where the initiating identity is different from hte owner account
-                net.run_packets_to_completion(net.open_account(identity, identity, balance).unwrap());
+                // TODO: add a test where the initiating actor is different from hte owner account
+                net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
             }
 
-            let identities: Vec<_> = net.identities().into_iter().collect();
-            let a = identities[0];
-            let b = identities[1];
-            let c = identities[2];
+            let actors: Vec<_> = net.actors().into_iter().collect();
+            let a = actors[0];
+            let b = actors[1];
+            let c = actors[2];
 
             let a_init_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
             let b_init_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
@@ -238,17 +238,17 @@ mod tests {
 
         let balances = vec![0, 0];
         for balance in balances.iter() {
-            let identity = net.initialize_proc();
+            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
+            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, *balance).unwrap();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -257,14 +257,12 @@ mod tests {
         assert!(net.members_are_in_agreement());
 
         // make sure that all balances in the network appear in the initial list of balances
-        // and all balances in the initial list appear in the network (full identity <-> balance correspondance check)
-        for identity in net.identities() {
+        // and all balances in the initial list appear in the network (full actor <-> balance correspondance check)
+        for actor in net.actors() {
             let mut remaining_balances = balances.clone();
 
-            for other_identity in net.identities() {
-                let balance = net
-                    .balance_from_pov_of_proc(&identity, &other_identity)
-                    .unwrap();
+            for other_actor in net.actors() {
+                let balance = net.balance_from_pov_of_proc(&actor, &other_actor).unwrap();
 
                 // This balance should have been in our initial set
                 let removed_balance = remaining_balances
@@ -285,25 +283,25 @@ mod tests {
     fn test_transfer_is_actually_moving_money_qc1() {
         let mut net = Net::new();
         for balance in &[0, 9] {
-            let identity = net.initialize_proc();
+            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
+            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, *balance).unwrap();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
         }
 
-        let initiator = net.find_identity_with_balance(9).unwrap();
+        let initiator = net.find_actor_with_balance(9).unwrap();
         let from = initiator;
-        let to = net.find_identity_with_balance(0).unwrap();
+        let to = net.find_actor_with_balance(0).unwrap();
         let amount = 9;
 
         let initial_from_balance = net.balance_from_pov_of_proc(&initiator, &from).unwrap();
@@ -336,27 +334,27 @@ mod tests {
     fn test_causal_dependancy() {
         let mut net = Net::new();
         for balance in &[1000, 1000, 1000, 1000] {
-            let identity = net.initialize_proc();
+            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
+            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, *balance).unwrap();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
         }
 
-        let identities: Vec<_> = net.identities().into_iter().collect();
-        let a = identities[0];
-        let b = identities[1];
-        let c = identities[2];
-        let d = identities[3];
+        let actors: Vec<_> = net.actors().into_iter().collect();
+        let a = actors[0];
+        let b = actors[1];
+        let c = actors[2];
+        let d = actors[3];
 
         // T0:  a -> b
         let mut packets = net.transfer(a, a, b, 500).unwrap();
@@ -398,17 +396,17 @@ mod tests {
     fn test_double_spend_qc2() {
         let mut net = Net::new();
         for balance in &[0, 0, 0] {
-            let identity = net.initialize_proc();
+            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
+            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, *balance).unwrap();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
@@ -416,10 +414,10 @@ mod tests {
             assert!(net.members_are_in_agreement());
         }
 
-        let identities: Vec<_> = net.identities().into_iter().collect();
-        let a = identities[0];
-        let b = identities[1];
-        let c = identities[2];
+        let actors: Vec<_> = net.actors().into_iter().collect();
+        let a = actors[0];
+        let b = actors[1];
+        let c = actors[2];
 
         let a_init_balance = net.balance_from_pov_of_proc(&a, &a).unwrap();
         let b_init_balance = net.balance_from_pov_of_proc(&b, &b).unwrap();
@@ -460,25 +458,25 @@ mod tests {
 
         let mut net = Net::new();
         for balance in &[2, 3, 4, 1] {
-            let identity = net.initialize_proc();
+            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&identity, |p| p.request_membership()).unwrap();
+            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating identity is different from hte owner account
-            let mut packets = net.open_account(identity, identity, *balance).unwrap();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
             }
         }
 
-        let a = net.find_identity_with_balance(1).unwrap();
-        let b = net.find_identity_with_balance(2).unwrap();
-        let c = net.find_identity_with_balance(3).unwrap();
+        let a = net.find_actor_with_balance(1).unwrap();
+        let b = net.find_actor_with_balance(2).unwrap();
+        let c = net.find_actor_with_balance(3).unwrap();
 
         let mut first_broadcast_packets = net.transfer(a, a, b, 1).unwrap();
         let mut second_broadcast_packets = net.transfer(a, a, c, 1).unwrap();

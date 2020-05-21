@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::at2::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
-use crate::at2::identity::Identity;
-use crate::at2::traits::SecureBroadcastAlgorithm;
+use crate::actor::Actor;
+use crate::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
+use crate::traits::SecureBroadcastAlgorithm;
 
 #[derive(Debug)]
 pub struct Net<A: SecureBroadcastAlgorithm> {
@@ -20,64 +20,64 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
 
     /// The largest set of procs who mutually see each other as peers
     /// are considered to be the network members.
-    pub fn members(&self) -> HashSet<Identity> {
+    pub fn members(&self) -> HashSet<Actor> {
         self.procs
             .iter()
             .map(|proc| {
                 proc.peers()
                     .iter()
-                    .flat_map(|peer| self.proc_from_id(peer))
-                    .filter(|peer_proc| peer_proc.peers().contains(&proc.identity()))
-                    .map(|peer_proc| peer_proc.identity())
+                    .flat_map(|peer| self.proc_from_actor(peer))
+                    .filter(|peer_proc| peer_proc.peers().contains(&proc.actor()))
+                    .map(|peer_proc| peer_proc.actor())
                     .collect::<HashSet<_>>()
             })
             .max_by_key(|members| members.len())
             .unwrap_or_default()
     }
 
-    /// Fetch the identities for each process in the network
-    pub fn identities(&self) -> HashSet<Identity> {
-        self.procs.iter().map(|p| p.identity()).collect()
+    /// Fetch the actors for each process in the network
+    pub fn actors(&self) -> HashSet<Actor> {
+        self.procs.iter().map(|p| p.actor()).collect()
     }
 
     /// Initialize a new process (NOTE: we do not request membership from the network automatically)
-    pub fn initialize_proc(&mut self) -> Identity {
+    pub fn initialize_proc(&mut self) -> Actor {
         let proc = SecureBroadcastProc::new(self.members());
-        let id = proc.identity();
+        let actor = proc.actor();
         self.procs.push(proc);
-        id
+        actor
     }
 
     /// Execute arbitrary code on a proc (immutable)
     pub fn on_proc<V>(
         &self,
-        id: &Identity,
+        actor: &Actor,
         f: impl FnOnce(&SecureBroadcastProc<A>) -> V,
     ) -> Option<V> {
-        self.proc_from_id(id).map(|p| f(p))
+        self.proc_from_actor(actor).map(|p| f(p))
     }
 
     /// Execute arbitrary code on a proc (mutating)
     pub fn on_proc_mut<V>(
         &mut self,
-        id: &Identity,
+        actor: &Actor,
         f: impl FnOnce(&mut SecureBroadcastProc<A>) -> V,
     ) -> Option<V> {
-        self.proc_from_id_mut(id).map(|p| f(p))
+        self.proc_from_actor_mut(actor).map(|p| f(p))
     }
 
-    /// Get a (immutable) reference to a proc with the given identity.
-    pub fn proc_from_id(&self, id: &Identity) -> Option<&SecureBroadcastProc<A>> {
+    /// Get a (immutable) reference to a proc with the given actor.
+    pub fn proc_from_actor(&self, actor: &Actor) -> Option<&SecureBroadcastProc<A>> {
         self.procs
             .iter()
-            .find(|secure_p| &secure_p.identity() == id)
+            .find(|secure_p| &secure_p.actor() == actor)
     }
 
-    /// Get a (mutable) reference to a proc with the given identity.
-    pub fn proc_from_id_mut(&mut self, id: &Identity) -> Option<&mut SecureBroadcastProc<A>> {
+    /// Get a (mutable) reference to a proc with the given actor.
+    pub fn proc_from_actor_mut(&mut self, actor: &Actor) -> Option<&mut SecureBroadcastProc<A>> {
         self.procs
             .iter_mut()
-            .find(|secure_p| &secure_p.identity() == id)
+            .find(|secure_p| &secure_p.actor() == actor)
     }
 
     /// Perform anti-entropy corrections on the network.
@@ -87,23 +87,23 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         // TODO: this should be done through a message passing interface.
 
         // For each proc, collect the procs who considers this proc it's peer.
-        let mut peer_reverse_index: HashMap<Identity, HashSet<Identity>> = HashMap::new();
+        let mut peer_reverse_index: HashMap<Actor, HashSet<Actor>> = HashMap::new();
 
         for proc in self.procs.iter() {
             for peer in proc.peers() {
                 peer_reverse_index
                     .entry(peer)
                     .or_default()
-                    .insert(proc.identity());
+                    .insert(proc.actor());
             }
         }
 
-        for (proc_id, reverse_peers) in peer_reverse_index {
+        for (proc_actor, reverse_peers) in peer_reverse_index {
             // other procs that consider this proc a peer, will share there state with this proc
             for reverse_peer in reverse_peers {
-                let source_peer_state = self.proc_from_id(&reverse_peer).unwrap().state();
-                self.on_proc_mut(&proc_id, |p| p.sync_from(source_peer_state));
-                println!("[TEST_NET] {} -> {}", reverse_peer, proc_id);
+                let source_peer_state = self.proc_from_actor(&reverse_peer).unwrap().state();
+                self.on_proc_mut(&proc_actor, |p| p.sync_from(source_peer_state));
+                println!("[TEST_NET] {} -> {}", reverse_peer, proc_actor);
             }
         }
     }
@@ -123,7 +123,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         let mut member_states_iter = self
             .members()
             .into_iter()
-            .flat_map(|id| self.proc_from_id(&id))
+            .flat_map(|actor| self.proc_from_actor(&actor))
             .map(|p| p.state());
 
         if let Some(reference_state) = member_states_iter.next() {
