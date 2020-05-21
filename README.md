@@ -11,9 +11,11 @@ On top of the core we layer an implementation of [SecureBroadcast](https://dahli
 At the outer most layer, we have our network implementation, that is, the layer that actually does the the dirty work of interacting with the real world. Sending, receiving packets, ensuring reliable packet delivery, etc.
 
 
-## Running the Test nets
+## Running the Test Nets
 
-To run the test networks, we make use of [quickcheck](https://github.com/BurntSushi/quickcheck) for generating a large range of network behavior and ensuring our properties hold.
+We make use of [quickcheck](https://github.com/BurntSushi/quickcheck) for generating a large range of network behavior and ensuring that our correctness properties hold.
+
+To run the test nets, run:
 
 ```bash
 # install rust + cargo (see https://rustup.rs/)
@@ -21,7 +23,7 @@ To run the test networks, we make use of [quickcheck](https://github.com/BurntSu
 QUICKCHECK_TESTS=1000 cargo test
 ```
 
-## Repo Structure
+## Repository Structure
 
 ```
 bft-crdts/src/
