@@ -1,5 +1,5 @@
 use crate::actor::Actor;
-use crate::bank::{Bank, Money, Op};
+use crate::bank::bft_bank::{Bank, Money, Op};
 use crate::deterministic_secure_broadcast::Packet;
 use crate::net::Net;
 

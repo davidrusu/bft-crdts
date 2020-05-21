@@ -3,8 +3,8 @@ use std::hash::Hash;
 
 use serde::Serialize;
 
-use crate::bft_orswot::BFTOrswot;
 use crate::net::Net;
+use crate::orswot::bft_orswot::BFTOrswot;
 use crate::traits::SecureBroadcastAlgorithm;
 
 impl<M: Clone + Eq + Hash + Debug + Serialize> Net<BFTOrswot<M>> {}
