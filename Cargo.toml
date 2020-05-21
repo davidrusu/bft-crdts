@@ -3,6 +3,7 @@ name = "bft-crdts"
 version = "0.1.0"
 authors = ["David Rusu <davidrusu.me@gmail.com>"]
 edition = "2018"
+license = "MIT OR BSD-3-Clause"
 
 [dependencies]
 crdts = "4.0.0"
