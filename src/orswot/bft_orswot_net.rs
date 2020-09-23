@@ -5,7 +5,6 @@ use serde::Serialize;
 
 use crate::net::Net;
 use crate::orswot::bft_orswot::BFTOrswot;
-use crate::traits::SecureBroadcastAlgorithm;
 
 impl<M: Clone + Eq + Hash + Debug + Serialize> Net<BFTOrswot<M>> {}
 
@@ -16,6 +15,7 @@ mod tests {
 
     use crdts::quickcheck::{quickcheck, TestResult};
     use crdts::Orswot;
+    use crate::traits::SecureBroadcastAlgorithm;
 
     quickcheck! {
         fn prop_adds_show_up_on_read(n_procs: u8, members: Vec<u8>) -> TestResult {
