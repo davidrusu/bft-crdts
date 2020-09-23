@@ -1,2 +1,2 @@
-mod bft_orswot;
-mod bft_orswot_net;
+pub mod bft_orswot;
+pub mod bft_orswot_net;

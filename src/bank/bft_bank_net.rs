@@ -4,18 +4,18 @@ use crate::deterministic_secure_broadcast::Packet;
 use crate::net::Net;
 
 impl Net<Bank> {
-    fn find_actor_with_balance(&self, balance: Money) -> Option<Actor> {
+    pub fn find_actor_with_balance(&self, balance: Money) -> Option<Actor> {
         self.actors()
             .iter()
             .cloned()
             .find(|a| self.balance_from_pov_of_proc(a, a).unwrap() == balance)
     }
 
-    fn balance_from_pov_of_proc(&self, pov: &Actor, account: &Actor) -> Option<Money> {
+    pub fn balance_from_pov_of_proc(&self, pov: &Actor, account: &Actor) -> Option<Money> {
         self.on_proc(pov, |p| p.read_state(|bank| bank.balance(account)))
     }
 
-    fn open_account(
+    pub fn open_account(
         &self,
         initiating_proc: Actor,
         bank_owner: Actor,
@@ -26,7 +26,7 @@ impl Net<Bank> {
         })
     }
 
-    fn transfer(
+    pub fn transfer(
         &self,
         initiating_proc: Actor,
         from: Actor,

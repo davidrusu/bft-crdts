@@ -1,13 +1,13 @@
 // #![deny(missing_docs)]
 
 /// Causal asset transfer algorithm described in AT2
-mod bank;
+pub mod bank;
 
 /// BFT Orswot algorithm
-mod orswot;
+pub mod orswot;
 
-mod actor;
-mod at2_impl;
-mod deterministic_secure_broadcast;
-mod net;
-mod traits;
+pub mod actor;
+pub mod at2_impl;
+pub mod deterministic_secure_broadcast;
+pub mod net;
+pub mod traits;

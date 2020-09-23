@@ -8,7 +8,7 @@ type ProcID = u8;
 type Money = i64;
 
 #[derive(Debug)]
-struct Proc {
+pub struct Proc {
     id: ProcID,
     initial_balances: HashMap<ProcID, Money>,
     seq: HashMap<ProcID, u64>, // Number of validated transfers outgoing from q
@@ -20,7 +20,7 @@ struct Proc {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Transfer {
+pub struct Transfer {
     from: ProcID,
     to: ProcID,
     amount: Money,
@@ -28,13 +28,13 @@ struct Transfer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Msg {
+pub struct Msg {
     transfer: Transfer,
     history: BTreeSet<Transfer>,
 }
 
 impl Proc {
-    fn new(id: ProcID, initial_balance: Money) -> Self {
+    pub fn new(id: ProcID, initial_balance: Money) -> Self {
         Proc {
             id,
             initial_balances: vec![(id, initial_balance)].into_iter().collect(),
@@ -61,7 +61,7 @@ impl Proc {
             .collect()
     }
 
-    fn transfer(&mut self, from: ProcID, to: ProcID, amount: Money) -> Vec<Cmd> {
+    pub fn transfer(&mut self, from: ProcID, to: ProcID, amount: Money) -> Vec<Cmd> {
         assert_eq!(from, self.id);
 
         if self.read(from) < amount {
@@ -83,7 +83,7 @@ impl Proc {
         }
     }
 
-    fn read(&self, account: ProcID) -> Money {
+    pub fn read(&self, account: ProcID) -> Money {
         self.balance(
             account,
             &self
@@ -95,7 +95,7 @@ impl Proc {
     }
 
     /// Executed when we successfully deliver messages to process p
-    fn on_delivery(&mut self, from: ProcID, msg: Msg) {
+    pub fn on_delivery(&mut self, from: ProcID, msg: Msg) {
         assert_eq!(from, msg.transfer.from);
 
         // Secure broadcast callback
@@ -153,7 +153,7 @@ impl Proc {
         }
     }
 
-    fn valid(&self, from: ProcID, msg: &Msg) -> bool {
+    pub fn valid(&self, from: ProcID, msg: &Msg) -> bool {
         let last_known_sender_seq = self.seq_for_proc(from);
         let balance_of_sender = self.balance(msg.transfer.from, &self.hist_for_proc(from));
         let sender_history = self.hist_for_proc(from);
@@ -187,22 +187,22 @@ impl Proc {
         }
     }
 
-    fn seq_for_proc(&self, p: ProcID) -> u64 {
+    pub fn seq_for_proc(&self, p: ProcID) -> u64 {
         self.seq.get(&p).cloned().unwrap_or_default()
     }
 
-    fn hist_for_proc(&self, p: ProcID) -> BTreeSet<Transfer> {
+    pub fn hist_for_proc(&self, p: ProcID) -> BTreeSet<Transfer> {
         self.hist.get(&p).cloned().unwrap_or_default()
     }
 
-    fn initial_balance_for_proc(&self, p: ProcID) -> Money {
+    pub fn initial_balance_for_proc(&self, p: ProcID) -> Money {
         self.initial_balances
             .get(&p)
             .cloned()
             .unwrap_or_else(|| panic!("[ERROR] No initial balance for proc {}", p))
     }
 
-    fn balance(&self, a: ProcID, h: &BTreeSet<Transfer>) -> Money {
+    pub fn balance(&self, a: ProcID, h: &BTreeSet<Transfer>) -> Money {
         let outgoing: Money = h.iter().filter(|t| t.from == a).map(|t| t.amount).sum();
         let incoming: Money = h.iter().filter(|t| t.to == a).map(|t| t.amount).sum();
 
@@ -249,12 +249,12 @@ impl Proc {
 }
 
 #[derive(Debug, Default)]
-struct Net {
+pub struct Net {
     procs: HashMap<ProcID, Proc>,
 }
 
 #[derive(Debug)]
-enum Cmd {
+pub enum Cmd {
     JoinRequest {
         to: ProcID,
         proc_to_join: ProcID,
@@ -267,7 +267,7 @@ enum Cmd {
 }
 
 impl Net {
-    fn add_proc(&mut self, id: ProcID, initial_balance: Money) {
+    pub fn add_proc(&mut self, id: ProcID, initial_balance: Money) {
         assert!(!self.procs.contains_key(&id));
         let peers = self.procs.keys().cloned().collect();
         let mut new_proc = Proc::new(id, initial_balance);
@@ -278,14 +278,14 @@ impl Net {
         self.step_until_done(proc_onboarding_cmds);
     }
 
-    fn read_balance_from_perspective_of_proc(&self, id: ProcID, account: ProcID) -> Money {
+    pub fn read_balance_from_perspective_of_proc(&self, id: ProcID, account: ProcID) -> Money {
         self.procs
             .get(&id)
             .map(|p| p.read(account))
             .expect("[ERROR] No proc by that name")
     }
 
-    fn transfer(&mut self, source: ProcID, from: ProcID, to: ProcID, amount: Money) {
+    pub fn transfer(&mut self, source: ProcID, from: ProcID, to: ProcID, amount: Money) {
         let source_proc = self
             .procs
             .get_mut(&source)
