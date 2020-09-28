@@ -25,6 +25,10 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M>
             None
         }
     }
+
+    pub fn orswot(&self) -> &orswot::Orswot<M, Actor> {
+        &self.orswot
+    }
 }
 
 impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadcastAlgorithm
