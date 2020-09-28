@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use ed25519_dalek::{PublicKey, Signature};
+use ed25519::{PublicKey, Signature};
 use serde::Serialize;
 
 #[derive(Eq, Clone, Copy, Serialize)]

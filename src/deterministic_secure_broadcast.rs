@@ -5,10 +5,11 @@ use crate::actor::{Actor, Sig};
 use crate::traits::SecureBroadcastAlgorithm;
 
 use crdts::{CmRDT, CvRDT, Dot, VClock};
-use ed25519_dalek::Keypair;
+use ed25519::Keypair;
+use ed25519::Signer;
+use ed25519::Verifier;
 use rand::rngs::OsRng;
 use serde::Serialize;
-use sha2::Sha512;
 
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
@@ -79,8 +80,7 @@ enum BFTOp<Op> {
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     pub fn new(known_peers: HashSet<Actor>) -> Self {
-        let mut csprng = OsRng::new().unwrap();
-        let keypair = Keypair::generate::<Sha512, _>(&mut csprng);
+        let keypair = Keypair::generate(&mut OsRng);
         let actor = Actor(keypair.public);
 
         let peers = if known_peers.is_empty() {
@@ -336,13 +336,13 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn sign(&self, blob: impl Serialize) -> Sig {
         let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
-        let blob_sig = self.keypair.sign::<Sha512>(&blob_bytes);
+        let blob_sig = self.keypair.sign(&blob_bytes);
 
         Sig(blob_sig)
     }
 
     fn verify_sig(&self, source: &Actor, blob: impl Serialize, sig: &Sig) -> bool {
         let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
-        source.0.verify::<Sha512>(&blob_bytes, &sig.0).is_ok()
+        source.0.verify(&blob_bytes, &sig.0).is_ok()
     }
 }
