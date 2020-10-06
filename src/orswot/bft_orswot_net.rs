@@ -13,9 +13,9 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    use crate::traits::SecureBroadcastAlgorithm;
     use crdts::quickcheck::{quickcheck, TestResult};
     use crdts::Orswot;
-    use crate::traits::SecureBroadcastAlgorithm;
 
     quickcheck! {
         fn prop_adds_show_up_on_read(n_procs: u8, members: Vec<u8>) -> TestResult {

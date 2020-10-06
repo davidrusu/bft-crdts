@@ -26,6 +26,10 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M>
         }
     }
 
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
     pub fn orswot(&self) -> &orswot::Orswot<M, Actor> {
         &self.orswot
     }
