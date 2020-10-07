@@ -104,6 +104,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
+    pub fn keypair(&self) -> &Keypair {
+        &self.keypair
+    }
+
     pub fn actor(&self) -> Actor {
         Actor(self.keypair.public)
     }

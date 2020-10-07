@@ -5,6 +5,8 @@ use crate::traits::SecureBroadcastAlgorithm;
 
 use serde::Serialize;
 
+// Todo: add closure for app to perform biz logic validation.
+
 #[derive(Debug, Serialize, PartialEq, Eq, Clone)]
 pub struct BFTOrswot<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> {
     actor: Actor,
