@@ -193,7 +193,25 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.pending_proof[&msg].clone();
-                    self.broadcast(Payload::ProofOfAgreement { msg, proof })
+                    let add_self = match msg.op {
+                        BFTOp::MembershipNewPeer(id) => {
+                            if id == self.actor() {
+                                true
+                            } else {
+                                println!("[DSB/BFT] Found unexepected non-self peer {}", id);
+                                false
+                            }
+                        },
+                        _ => false
+                    };
+
+                    let packets = self.broadcast(Payload::ProofOfAgreement { msg, proof });
+
+                    // We do this after broadcast, to avoid broadcasting to ourself.
+                    if add_self {
+                        self.peers.replace(self.actor());
+                    }
+                    packets
                 } else {
                     vec![]
                 }
