@@ -276,7 +276,7 @@ mod tests {
             assert_eq!(remaining_balances.len(), 0);
         }
 
-        assert_eq!(net.n_packets, 13);
+        assert_eq!(net.n_packets, 15);
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(from_balance_abs_delta, amount);
         assert_eq!(from_balance_abs_delta, to_balance_abs_delta);
 
-        assert_eq!(net.n_packets, 19);
+        assert_eq!(net.n_packets, 21);
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
 
-        assert_eq!(net.n_packets, 79);
+        assert_eq!(net.n_packets, 81);
     }
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
 
             net.anti_entropy();
 
-            // TODO: add a test where the initiating actor is different from hte owner account
+            // TODO: add a test where the initiating actor is different from the owner account
             let mut packets = net.open_account(actor, actor, *balance).unwrap();
             while let Some(packet) = packets.pop() {
                 packets.extend(net.deliver_packet(packet));
@@ -447,7 +447,7 @@ mod tests {
             (b_delta == a_init_balance && c_delta == 0)
                 || (b_delta == 0 && c_delta == a_init_balance)
         );
-        assert_eq!(net.n_packets, 42);
+        assert_eq!(net.n_packets, 44);
     }
 
     #[test]
@@ -520,6 +520,6 @@ mod tests {
         assert_eq!(b_final_balance, 2);
         assert_eq!(c_final_balance, 3);
 
-        assert_eq!(net.n_packets, 58);
+        assert_eq!(net.n_packets, 60);
     }
 }
