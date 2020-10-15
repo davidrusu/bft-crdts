@@ -287,9 +287,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
-            BFTOp::MembershipNewPeer(actor) => {
-                vec![(!self.peers.contains(&actor), "peer already exists")]
-            }
+            BFTOp::MembershipNewPeer(actor) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
         };
 
