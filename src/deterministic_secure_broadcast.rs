@@ -33,6 +33,13 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
 
     // The set of members in this network.
     peers: HashSet<Actor>,
+
+    peermeta: HashMap<Actor, PeerMeta>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerMeta {
+    packets_undelivered: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +59,7 @@ pub struct Packet<Op> {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum Payload<Op> {
+
     RequestValidation {
         msg: Msg<Op>,
     },
@@ -73,12 +81,17 @@ pub struct Msg<Op> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 enum BFTOp<Op> {
-    // TODO: support peers leaving
+    // Peer joins
     MembershipNewPeer(Actor),
+    // Peer leaves voluntarily
+    MembershipLeavePeer(Actor),
+    // Remove peer without peer's consent.
+    MembershipKillPeer(Actor),
     AlgoOp(Op),
 }
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
+
     pub fn new(known_peers: HashSet<Actor>) -> Self {
         let keypair = Keypair::generate(&mut OsRng);
         let actor = Actor(keypair.public);
@@ -94,6 +107,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             known_peers
         };
 
+        let peermeta = HashMap::new();
+
         Self {
             keypair,
             pending_proof: HashMap::new(),
@@ -101,6 +116,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             peers,
             delivered: VClock::new(),
             received: VClock::new(),
+            peermeta,
         }
     }
 
@@ -126,6 +142,14 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
         self.exec_bft_op(BFTOp::MembershipNewPeer(self.actor()))
+    }
+
+    pub fn request_leave_membership(&self) -> Vec<Packet<A::Op>> {
+        self.exec_bft_op(BFTOp::MembershipLeavePeer(self.actor()))
+    }
+
+    pub fn request_kill_membership(&self, peer: Actor) -> Vec<Packet<A::Op>> {
+        self.exec_bft_op(BFTOp::MembershipKillPeer(peer))
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
@@ -168,10 +192,32 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
+    pub fn process_undelivered_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
+        println!("[DSB] processing undelivered packet. {} --> {}", packet.source, packet.dest);
+
+        let undelivered = match self.peermeta.get_mut(&packet.dest) {
+            Some(mut meta) => {
+                meta.packets_undelivered += 1;
+                meta.packets_undelivered
+            },
+            None => {
+                let cnt = 1u64;
+                let meta = PeerMeta{packets_undelivered: cnt};
+                self.peermeta.insert(packet.dest, meta);
+                cnt
+            }
+        };
+        
+        match undelivered {
+            1 => self.request_kill_membership(packet.dest),
+            _ => vec![],
+        }
+    }
+
     fn process_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         match packet.payload {
             Payload::RequestValidation { msg } => {
-                println!("[DSB] request for validation");
+                println!("[DSB] received request for validation");
                 self.received.apply(msg.dot);
 
                 // NOTE: we do not need to store this message, it will be sent back to us
@@ -181,7 +227,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 vec![self.send(packet.source, validation)]
             }
             Payload::SignedValidated { msg, sig } => {
-                println!("[DSB] signed validated");
+                println!("[DSB] received signed validated");
                 self.pending_proof
                     .entry(msg.clone())
                     .or_default()
@@ -204,20 +250,37 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                         },
                         _ => false
                     };
+                    let remove_self = match msg.op {
+                        BFTOp::MembershipLeavePeer(id) => {
+                            if id == self.actor() {
+                                true
+                            } else {
+                                println!("[DSB/BFT] Found unexepected non-self peer {}", id);
+                                false
+                            }
+                        },
+                        _ => false
+                    };
 
                     let packets = self.broadcast(Payload::ProofOfAgreement { msg, proof });
 
                     // We do this after broadcast, to avoid broadcasting to ourself.
+/*                    
                     if add_self {
                         self.peers.replace(self.actor());
                     }
+                    if remove_self {
+                        self.peers.remove(&self.actor());
+                    }
+*/                    
+
                     packets
                 } else {
                     vec![]
                 }
             }
             Payload::ProofOfAgreement { msg, .. } => {
-                println!("[DSB] proof of agreement");
+                println!("[DSB] received proof of agreement");
                 // We may not have been in the subset of members to validate this clock
                 // so we may not have had the chance to increment received. We must bring
                 // received up to this msg's timestamp.
@@ -227,22 +290,31 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 self.received.apply(msg.dot);
                 self.delivered.apply(msg.dot);
 
-                // Apply the op
-                // TODO: factor this out into an apply() method
-                match msg.op {
-                    BFTOp::MembershipNewPeer(id) => {
-                        self.peers.insert(id);
-                        // do we want to do some sort of onboarding here?
-                        // ie. maybe we can send this new peer our state
-                    }
-                    BFTOp::AlgoOp(op) => self.algo.apply(op),
-                };
+                self.apply(msg.op);
 
                 // TODO: Once we relax our network assumptions, we must put in an ack
                 // here so that the source knows that honest procs have applied the transaction
                 vec![]
             }
         }
+    }
+
+    fn apply(&mut self, op: BFTOp<A::Op>) {
+        // Apply the op
+        match op {
+            BFTOp::MembershipNewPeer(id) => {
+                self.peers.insert(id);
+                // do we want to do some sort of onboarding here?
+                // ie. maybe we can send this new peer our state
+            },
+            BFTOp::MembershipLeavePeer(id) => {
+                self.peers.remove(&id);
+            },
+            BFTOp::MembershipKillPeer(id) => {
+                self.peers.remove(&id);
+            },
+            BFTOp::AlgoOp(op) => self.algo.apply(op),
+        };
     }
 
     fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
@@ -288,7 +360,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 (
                     proof
                         .iter()
-                        .all(|(signatory, _sig)| self.peers.contains(&signatory)),
+                        .all(|(signatory, _sig)| self.peers.contains(&signatory) || *signatory == self.actor()),
                     "proof contains signature(s) from unknown peer(s)",
                 ),
                 (
@@ -309,7 +381,19 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
-            BFTOp::MembershipNewPeer(actor) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
+            BFTOp::MembershipNewPeer(actor) => {
+                // In a proper deployment, add some validations to resist Sybil attacks
+                vec![(!self.peers.contains(&actor) || *actor == self.actor(), "peer already exists")]
+            },
+            BFTOp::MembershipLeavePeer(actor) => {
+                vec![(self.peers.contains(&actor), "peer does not exist")]
+            },
+            BFTOp::MembershipKillPeer(actor) => {
+                vec![
+                    (self.peers.contains(&actor), "peer does not exist"),
+                    (if let Some(meta) = self.peermeta.get(&actor) { meta.packets_undelivered == 0 } else {false}, "peer has no undelivered packets"),
+                ]
+            },
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
         };
 
@@ -342,6 +426,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.peers
             .iter()
             .cloned()
+//            .filter(|p| *p != self.actor())
             .map(|dest_p| self.send(dest_p, payload.clone()))
             .collect()
     }
