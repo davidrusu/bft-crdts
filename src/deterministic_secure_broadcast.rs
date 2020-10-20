@@ -159,7 +159,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
         println!("{} syncing", self.actor());
-        self.peers.extend(state.peers);
+        self.peers.extend(state.peers);        // note:  cannot remove peers this way.
         self.delivered.merge(state.delivered.clone());
         self.received.merge(state.delivered); // We advance received up to what we've delivered
         self.algo.sync_from(state.algo_state);
@@ -207,7 +207,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 cnt
             }
         };
-        
+
+        println!("[DSB] undelivered: {:#?}", undelivered);
         match undelivered {
             1 => self.request_kill_membership(packet.dest),
             _ => vec![],
@@ -311,7 +312,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 self.peers.remove(&id);
             },
             BFTOp::MembershipKillPeer(id) => {
+                println!("[DSB] removing peer {}, peers before: {:?}", id, self.peers);
                 self.peers.remove(&id);
+                println!("[DSB] removed peer {}, peers_after: {:?}", id, self.peers);
             },
             BFTOp::AlgoOp(op) => self.algo.apply(op),
         };
@@ -391,7 +394,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             BFTOp::MembershipKillPeer(actor) => {
                 vec![
                     (self.peers.contains(&actor), "peer does not exist"),
-                    (if let Some(meta) = self.peermeta.get(&actor) { meta.packets_undelivered == 0 } else {false}, "peer has no undelivered packets"),
+                    (if let Some(meta) = self.peermeta.get(&actor) { meta.packets_undelivered > 0 } else {false}, "peer has no undelivered packets"),
                 ]
             },
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
@@ -417,7 +420,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn quorum(&self, n: usize) -> bool {
-        n * 3 >= self.peers.len() * 2
+        // 2/3.
+        // n * 3 >= self.peers.len() * 2
+
+        // simple majority.
+        n * 4 > self.peers.len() * 2
     }
 
     fn broadcast(&self, payload: Payload<A::Op>) -> Vec<Packet<A::Op>> {
