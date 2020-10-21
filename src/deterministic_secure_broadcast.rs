@@ -239,41 +239,24 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 if self.quorum(num_signatures) {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
-                    let proof = self.pending_proof[&msg].clone();
-                    let add_self = match msg.op {
+                    let proof = self.pending_proof.remove(&msg).unwrap();
+                    match msg.op {
                         BFTOp::MembershipNewPeer(id) => {
-                            if id == self.actor() {
-                                true
-                            } else {
+                            if id != self.actor() {
                                 println!("[DSB/BFT] Found unexepected non-self peer {}", id);
-                                false
                             }
                         },
-                        _ => false
-                    };
-                    let remove_self = match msg.op {
                         BFTOp::MembershipLeavePeer(id) => {
-                            if id == self.actor() {
-                                true
-                            } else {
+                            if id != self.actor() {
                                 println!("[DSB/BFT] Found unexepected non-self peer {}", id);
-                                false
                             }
                         },
-                        _ => false
+                        _ => {}
                     };
 
                     let packets = self.broadcast(Payload::ProofOfAgreement { msg, proof });
 
-                    // We do this after broadcast, to avoid broadcasting to ourself.
-/*                    
-                    if add_self {
-                        self.peers.replace(self.actor());
-                    }
-                    if remove_self {
-                        self.peers.remove(&self.actor());
-                    }
-*/                    
+                    // note: We modify self.peers when we receive ProofOfAgreement ourself.
 
                     packets
                 } else {
@@ -341,10 +324,22 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
+
+        match payload {
+            Payload::RequestValidation { msg } if msg.dot != self.received.inc(from) => {
+                println!("[DSB] validating RequestValidation: not the next message. msg.dot = {:?}  expecting: {:?}", msg.dot, self.received.inc(from));
+            },
+            Payload::ProofOfAgreement { msg, .. } if msg.dot != self.delivered.inc(from) => {
+                println!("[DSB] validating ProofOfAgreement: not the next message. msg.dot = {:?}  expecting: {:?}", msg.dot, self.delivered.inc(from));
+            },
+            _ => {}
+        }
+
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
                 (from == msg.dot.actor, "source does not match the msg dot"),
-                (msg.dot == self.received.inc(from), "not the next msg"),
+// Experimental: removing this check temporarily.  probably not OK to remove.
+//                (msg.dot == self.received.inc(from), "not the next msg"),
                 (
                     self.validate_bft_op(&from, &msg.op),
                     "failed bft op validation",
@@ -355,10 +350,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 (self.actor() == msg.dot.actor, "validation not requested"),
             ],
             Payload::ProofOfAgreement { msg, proof } => vec![
-                (
-                    self.delivered.inc(from) == msg.dot,
-                    "either already delivered or out of order msg",
-                ),
+// Experimental: removing this check temporarily.  probably not OK to remove.
+//              (self.delivered.inc(from) == msg.dot, "either already delivered or out of order msg"),
                 (self.quorum(proof.len()), "not enough signatures for quorum"),
                 (
                     proof
