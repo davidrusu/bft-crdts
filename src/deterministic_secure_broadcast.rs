@@ -201,11 +201,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                                 println!("[DSB/BFT] Found unexepected non-self peer {}", id);
                                 false
                             }
-                        },
-                        _ => false
+                        }
+                        _ => false,
                     };
 
-                    let packets = self.broadcast(Payload::ProofOfAgreement { msg, proof });
+                    let packets = self.broadcast(&Payload::ProofOfAgreement { msg, proof });
 
                     // We do this after broadcast, to avoid broadcasting to ourself.
                     if add_self {
@@ -329,14 +329,14 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         };
 
         println!("[DSB] {} initiating bft for msg {:?}", self.actor(), msg);
-        self.broadcast(Payload::RequestValidation { msg })
+        self.broadcast(&Payload::RequestValidation { msg })
     }
 
     fn quorum(&self, n: usize) -> bool {
         n * 3 >= self.peers.len() * 2
     }
 
-    fn broadcast(&self, payload: Payload<A::Op>) -> Vec<Packet<A::Op>> {
+    fn broadcast(&self, payload: &Payload<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[DSB] broadcasting {}->{:?}", self.actor(), self.peers());
 
         self.peers
