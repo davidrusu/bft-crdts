@@ -5,6 +5,10 @@ authors = ["David Rusu <davidrusu.me@gmail.com>"]
 edition = "2018"
 license = "MIT OR BSD-3-Clause"
 
+[[bin]]
+name = "qp2p_proc"
+path = "src/qp2p_proc.rs"
+
 [dependencies]
 crdts = "4.0.0"
 ed25519 = { version = "1.0.0", package = "ed25519-dalek", features = ["serde"] }
@@ -13,6 +17,9 @@ sha2 = "0.8.1"
 serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
+cmdr = "0.3.11"
+tokio = { version = "0.3", features = ["full"] }
+qp2p = { path = "../qp2p" }
 
 [profile.test]
 # Property testing is a power hungry beast, we need to go as fast as we can
