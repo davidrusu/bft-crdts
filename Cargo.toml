@@ -17,7 +17,7 @@ sha2 = "0.8.1"
 serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
-cmdr = "0.3.11"
+cmdr = { path = "../cmdr/cmdr" }
 tokio = { version = "0.3", features = ["full"] }
 qp2p = { path = "../qp2p" }
 
