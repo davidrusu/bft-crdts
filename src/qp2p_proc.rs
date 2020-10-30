@@ -78,12 +78,12 @@ struct Proc {
 #[derive(Debug)]
 struct Repl {
     state: SharedState,
-    network_tx: mpsc::Sender<NetworkEvent>,
+    network_tx: mpsc::Sender<NetworkCmd>,
 }
 
 #[cmdr]
 impl Repl {
-    fn new(state: SharedState, network_tx: mpsc::Sender<NetworkEvent>) -> Self {
+    fn new(state: SharedState, network_tx: mpsc::Sender<NetworkCmd>) -> Self {
         Self { state, network_tx }
     }
 
@@ -93,7 +93,7 @@ impl Repl {
             [ip_port] => match ip_port.parse::<SocketAddr>() {
                 Ok(addr) => {
                     println!("Parsed an addr {:?}", addr);
-                    self.network_tx.try_send(NetworkEvent::AddPeer(addr));
+                    self.network_tx.try_send(NetworkCmd::AddPeer(addr)).unwrap();
                 }
                 Err(e) => println!("Bad peer spec {:?}", e),
             },
@@ -106,13 +106,14 @@ impl Repl {
     fn add(&mut self, args: &[String]) -> CommandResult {
         if args.len() > 0 {
             match args[0].parse::<u8>() {
-                Ok(v) => self.state.apply(Op::Add(v)),
+                Ok(v) => {
+                    self.network_tx.try_send(NetworkCmd::Broadcast(Op::Add(v)));
+                }
                 Err(_) => {
                     println!("Failed to parse: {:?}", args);
                 }
             }
         }
-
         Ok(Action::Done)
     }
 
@@ -120,7 +121,10 @@ impl Repl {
     fn remove(&mut self, args: &[String]) -> CommandResult {
         if args.len() > 0 {
             match args[0].parse::<u8>() {
-                Ok(v) => self.state.apply(Op::Remove(v)),
+                Ok(v) => {
+                    self.network_tx
+                        .try_send(NetworkCmd::Broadcast(Op::Remove(v)));
+                }
                 Err(e) => {
                     println!("Failed to parse: {:?}", args);
                 }
@@ -147,54 +151,98 @@ impl Repl {
 
 #[derive(Debug)]
 struct Network {
+    state: SharedState,
     qp2p: QuicP2p,
     peers: Vec<(Endpoint, SocketAddr)>,
+    rt: tokio::runtime::Runtime,
 }
 
 #[derive(Debug)]
-enum NetworkEvent {
+enum NetworkCmd {
     AddPeer(SocketAddr),
     Broadcast(Op),
+    Apply(Op),
 }
 
 impl Network {
-    fn new() -> Self {
+    fn new(state: SharedState) -> Self {
         Self {
+            state,
             qp2p: qp2p(),
-
             peers: Default::default(),
+            rt: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
-    async fn apply(&mut self, event: NetworkEvent) {
+    async fn our_endpoint(&self) -> Endpoint {
+        self.qp2p.new_endpoint().unwrap()
+    }
+
+    async fn apply(&mut self, event: NetworkCmd) {
+        println!("Applying {:?}", event);
         match event {
-            NetworkEvent::AddPeer(addr) => {
+            NetworkCmd::AddPeer(addr) => {
                 let peer = self.qp2p.new_endpoint().unwrap();
                 self.peers.push((peer, addr));
             }
-            NetworkEvent::Broadcast(op) => {
+            NetworkCmd::Broadcast(op) => {
                 let msg = bincode::serialize(&op).unwrap();
                 for (peer, addr) in self.peers.iter() {
+                    println!("Broadcasting to addr {:?}", addr);
                     let conn = peer.connect_to(&addr).await.unwrap();
-                    let _ = conn.send(msg.clone().into()).await.unwrap();
+                    println!("Connected to {:?}", addr);
+                    let _ = conn.send_uni(msg.clone().into()).await.unwrap();
+                    println!("Sent to {:?}", addr);
+                    conn.close()
                 }
             }
+            NetworkCmd::Apply(op) => self.state.apply(op),
         }
     }
 }
 
 #[tokio::main]
-async fn listen_for_network_events(mut net_rx: mpsc::Receiver<NetworkEvent>) {
-    let mut network = Network::new();
-    while let Some(net_event) = net_rx.recv().await {
-        println!("Applying {:?} to net", net_event);
-        network.apply(net_event);
-    }
-}
-
-fn main() {
+async fn main() {
     let state = SharedState::new();
     let (net_tx, mut net_rx) = mpsc::channel(100);
-    std::thread::spawn(|| listen_for_network_events(net_rx));
+    let mut network = Network::new(state.clone());
+    let (our_endpoint, mut network) = tokio::spawn(async move {
+        let endpoint = network.our_endpoint().await;
+        (endpoint, network)
+    })
+    .await
+    .unwrap();
+
+    let mut listen_net_tx = net_tx.clone();
+    tokio::spawn(async move {
+        println!("listening on {:?}", our_endpoint.our_addr());
+        listen_net_tx
+            .send(NetworkCmd::AddPeer(our_endpoint.our_addr().unwrap()))
+            .await;
+        match our_endpoint.listen() {
+            Ok(mut conn) => {
+                println!("Got conn");
+                while let Some(mut msgs) = conn.next().await {
+                    println!("Got msgs");
+                    while let Some(msg) = msgs.next().await {
+                        println!("Got msg");
+                        let op: Op = bincode::deserialize(&msg.get_message_data()).unwrap();
+                        listen_net_tx.send(NetworkCmd::Apply(op)).await;
+                    }
+                    println!("Finished msgs");
+                }
+            }
+            Err(e) => println!("Failed to start listening"),
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(net_cmd) = net_rx.recv().await {
+            println!("Got net cmd {:?}", net_cmd);
+            network.apply(net_cmd).await;
+        }
+    });
+
+    // std::thread::spawn(|| listen_for_network_events(net_rx));
     cmd_loop(&mut Repl::new(state.clone(), net_tx));
 }

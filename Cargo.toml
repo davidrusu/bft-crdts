@@ -18,7 +18,7 @@ serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
 cmdr = { path = "../cmdr/cmdr" }
-tokio = { version = "0.3", features = ["full"] }
+tokio = { version = "~0.2.21", features = ["full"] }
 qp2p = { path = "../qp2p" }
 
 [profile.test]
