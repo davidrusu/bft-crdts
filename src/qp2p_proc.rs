@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use cmdr::*; // cli repl
 
-use qp2p::{self, Config, Endpoint, Message, QuicP2p};
+use qp2p::{self, Config, Endpoint, QuicP2p};
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -227,7 +227,7 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<Network
                 println!("Finished msgs");
             }
         }
-        Err(e) => println!("Failed to start listening"),
+        Err(e) => println!("Failed to start listening: {:?}", e),
     }
 }
 
@@ -236,9 +236,9 @@ async fn main() {
     let state = SharedState::new();
     let network = Network::new(state.clone());
 
-    let (net_tx, mut net_rx) = mpsc::channel(100);
+    let (net_tx, net_rx) = mpsc::channel(100);
 
     tokio::spawn(listen_for_ops(network.new_endpoint(), net_tx.clone()));
     tokio::spawn(network.listen_for_cmds(net_rx));
-    cmd_loop(&mut Repl::new(state.clone(), net_tx)).expect("Failure in REPL");
+    cmd_loop(&mut Repl::new(state, net_tx)).expect("Failure in REPL");
 }
