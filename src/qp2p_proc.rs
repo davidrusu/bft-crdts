@@ -238,11 +238,9 @@ async fn main() {
 
     tokio::spawn(async move {
         while let Some(net_cmd) = net_rx.recv().await {
-            println!("Got net cmd {:?}", net_cmd);
             network.apply(net_cmd).await;
         }
     });
 
-    // std::thread::spawn(|| listen_for_network_events(net_rx));
-    cmd_loop(&mut Repl::new(state.clone(), net_tx));
+    cmd_loop(&mut Repl::new(state.clone(), net_tx)).expect("Failure in REPL");
 }
