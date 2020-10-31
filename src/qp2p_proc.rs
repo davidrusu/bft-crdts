@@ -104,47 +104,45 @@ impl Repl {
 
     #[cmd]
     fn add(&mut self, args: &[String]) -> CommandResult {
-        if args.len() > 0 {
-            match args[0].parse::<u8>() {
+        match args {
+            [arg] => match arg.parse::<u8>() {
                 Ok(v) => {
-                    self.network_tx.try_send(NetworkCmd::Broadcast(Op::Add(v)));
+                    self.network_tx
+                        .try_send(NetworkCmd::Broadcast(Op::Add(v)))
+                        .expect("Failed to broadcast Add");
                 }
-                Err(_) => {
-                    println!("Failed to parse: {:?}", args);
-                }
-            }
+                Err(_) => println!("Failed to parse: '{}'", arg),
+            },
+            _ => println!("help: add <v>"),
         }
         Ok(Action::Done)
     }
 
     #[cmd]
     fn remove(&mut self, args: &[String]) -> CommandResult {
-        if args.len() > 0 {
-            match args[0].parse::<u8>() {
+        match args {
+            [arg] => match arg.parse::<u8>() {
                 Ok(v) => {
                     self.network_tx
-                        .try_send(NetworkCmd::Broadcast(Op::Remove(v)));
+                        .try_send(NetworkCmd::Broadcast(Op::Remove(v)))
+                        .expect("Failed to broadcast Remove");
                 }
-                Err(e) => {
-                    println!("Failed to parse: {:?}", args);
-                }
-            }
+                Err(_) => println!("Failed to parse: '{}'", arg),
+            },
+            _ => println!("help: remove <v>"),
         }
-
         Ok(Action::Done)
     }
 
     #[cmd]
-    fn read(&mut self, args: &[String]) -> CommandResult {
+    fn read(&mut self, _args: &[String]) -> CommandResult {
         println!("{:?}", self.state.read());
-
         Ok(Action::Done)
     }
 
     #[cmd]
-    fn dbg(&mut self, args: &[String]) -> CommandResult {
+    fn dbg(&mut self, _args: &[String]) -> CommandResult {
         println!("{:#?}", self);
-
         Ok(Action::Done)
     }
 }
@@ -210,7 +208,8 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<Network
 
     network_tx
         .send(NetworkCmd::AddPeer(endpoint.our_addr().unwrap()))
-        .await;
+        .await
+        .expect("Failed to send command to add self as peer");
 
     match endpoint.listen() {
         Ok(mut conn) => {
@@ -220,7 +219,10 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<Network
                 while let Some(msg) = msgs.next().await {
                     println!("Got msg");
                     let op: Op = bincode::deserialize(&msg.get_message_data()).unwrap();
-                    network_tx.send(NetworkCmd::Apply(op)).await;
+                    network_tx
+                        .send(NetworkCmd::Apply(op))
+                        .await
+                        .expect("Failed to send Apply network command");
                 }
                 println!("Finished msgs");
             }
@@ -232,13 +234,11 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<Network
 #[tokio::main]
 async fn main() {
     let state = SharedState::new();
+    let network = Network::new(state.clone());
+
     let (net_tx, mut net_rx) = mpsc::channel(100);
-    let mut network = Network::new(state.clone());
-    let our_endpoint = network.new_endpoint();
-    let mut listen_net_tx = net_tx.clone();
 
     tokio::spawn(listen_for_ops(network.new_endpoint(), net_tx.clone()));
     tokio::spawn(network.listen_for_cmds(net_rx));
-
     cmd_loop(&mut Repl::new(state.clone(), net_tx)).expect("Failure in REPL");
 }
