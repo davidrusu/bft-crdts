@@ -178,6 +178,12 @@ impl Network {
         self.qp2p.new_endpoint().expect("Failed to create endpoint")
     }
 
+    async fn listen_for_cmds(mut self, mut net_rx: mpsc::Receiver<NetworkCmd>) {
+        while let Some(net_cmd) = net_rx.recv().await {
+            self.apply(net_cmd).await;
+        }
+    }
+
     async fn apply(&mut self, event: NetworkCmd) {
         println!("Applying {:?}", event);
         match event {
@@ -201,43 +207,40 @@ impl Network {
     }
 }
 
+async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<NetworkCmd>) {
+    println!("listening on {:?}", endpoint.our_addr());
+
+    network_tx
+        .send(NetworkCmd::AddPeer(endpoint.our_addr().unwrap()))
+        .await;
+
+    match endpoint.listen() {
+        Ok(mut conn) => {
+            println!("Got conn");
+            while let Some(mut msgs) = conn.next().await {
+                println!("Got msgs");
+                while let Some(msg) = msgs.next().await {
+                    println!("Got msg");
+                    let op: Op = bincode::deserialize(&msg.get_message_data()).unwrap();
+                    network_tx.send(NetworkCmd::Apply(op)).await;
+                }
+                println!("Finished msgs");
+            }
+        }
+        Err(e) => println!("Failed to start listening"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let state = SharedState::new();
     let (net_tx, mut net_rx) = mpsc::channel(100);
     let mut network = Network::new(state.clone());
     let our_endpoint = network.new_endpoint();
-
     let mut listen_net_tx = net_tx.clone();
-    tokio::spawn(async move {
-        println!("listening on {:?}", our_endpoint.our_addr());
 
-        listen_net_tx
-            .send(NetworkCmd::AddPeer(our_endpoint.our_addr().unwrap()))
-            .await;
-
-        match our_endpoint.listen() {
-            Ok(mut conn) => {
-                println!("Got conn");
-                while let Some(mut msgs) = conn.next().await {
-                    println!("Got msgs");
-                    while let Some(msg) = msgs.next().await {
-                        println!("Got msg");
-                        let op: Op = bincode::deserialize(&msg.get_message_data()).unwrap();
-                        listen_net_tx.send(NetworkCmd::Apply(op)).await;
-                    }
-                    println!("Finished msgs");
-                }
-            }
-            Err(e) => println!("Failed to start listening"),
-        }
-    });
-
-    tokio::spawn(async move {
-        while let Some(net_cmd) = net_rx.recv().await {
-            network.apply(net_cmd).await;
-        }
-    });
+    tokio::spawn(listen_for_ops(network.new_endpoint(), net_tx.clone()));
+    tokio::spawn(network.listen_for_cmds(net_rx));
 
     cmd_loop(&mut Repl::new(state.clone(), net_tx)).expect("Failure in REPL");
 }
