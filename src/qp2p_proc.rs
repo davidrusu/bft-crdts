@@ -154,7 +154,6 @@ struct Network {
     state: SharedState,
     qp2p: QuicP2p,
     peers: Vec<(Endpoint, SocketAddr)>,
-    rt: tokio::runtime::Runtime,
 }
 
 #[derive(Debug)]
@@ -170,7 +169,6 @@ impl Network {
             state,
             qp2p: qp2p(),
             peers: Default::default(),
-            rt: tokio::runtime::Runtime::new().unwrap(),
         }
     }
 
