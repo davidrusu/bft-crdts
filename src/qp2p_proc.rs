@@ -174,15 +174,15 @@ impl Network {
         }
     }
 
-    async fn our_endpoint(&self) -> Endpoint {
-        self.qp2p.new_endpoint().unwrap()
+    fn new_endpoint(&self) -> Endpoint {
+        self.qp2p.new_endpoint().expect("Failed to create endpoint")
     }
 
     async fn apply(&mut self, event: NetworkCmd) {
         println!("Applying {:?}", event);
         match event {
             NetworkCmd::AddPeer(addr) => {
-                let peer = self.qp2p.new_endpoint().unwrap();
+                let peer = self.new_endpoint();
                 self.peers.push((peer, addr));
             }
             NetworkCmd::Broadcast(op) => {
@@ -206,19 +206,16 @@ async fn main() {
     let state = SharedState::new();
     let (net_tx, mut net_rx) = mpsc::channel(100);
     let mut network = Network::new(state.clone());
-    let (our_endpoint, mut network) = tokio::spawn(async move {
-        let endpoint = network.our_endpoint().await;
-        (endpoint, network)
-    })
-    .await
-    .unwrap();
+    let our_endpoint = network.new_endpoint();
 
     let mut listen_net_tx = net_tx.clone();
     tokio::spawn(async move {
         println!("listening on {:?}", our_endpoint.our_addr());
+
         listen_net_tx
             .send(NetworkCmd::AddPeer(our_endpoint.our_addr().unwrap()))
             .await;
+
         match our_endpoint.listen() {
             Ok(mut conn) => {
                 println!("Got conn");
