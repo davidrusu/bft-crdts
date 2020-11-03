@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use cmdr::*; // cli repl
+use cmdr::*;
 
 use qp2p::{self, Config, Endpoint, QuicP2p};
 use std::{
@@ -76,10 +76,10 @@ impl Repl {
         match args {
             [ip_port] => match ip_port.parse::<SocketAddr>() {
                 Ok(addr) => {
-                    println!("[CLI/REPL] parsed addr {:?}", addr);
+                    println!("[REPL] parsed addr {:?}", addr);
                     self.network_tx.try_send(RouterCmd::SayHello(addr)).unwrap();
                 }
-                Err(e) => println!("[CLI/REPL] bad addr {:?}", e),
+                Err(e) => println!("[REPL] bad addr {:?}", e),
             },
             _ => println!("help: peer <ip>:<port>"),
         };
@@ -97,7 +97,7 @@ impl Repl {
                             .expect("Failed to queue packet");
                     }
                 }
-                Err(_) => println!("[CLI/REPL] bad arg: '{}'", arg),
+                Err(_) => println!("[REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: add <v>"),
         }
@@ -115,7 +115,7 @@ impl Repl {
                             .expect("Failed to queue packet");
                     }
                 }
-                Err(_) => println!("[CLI/REPL] bad arg: '{}'", arg),
+                Err(_) => println!("[REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: remove <v>"),
         }
@@ -198,7 +198,7 @@ impl Router {
     async fn deliver_packet(&self, packet: Packet) {
         if let Some((peer, addr)) = self.peers.get(&packet.dest) {
             println!(
-                "[CLI/RTR] delivering packet to {:?} at addr {:?}",
+                "[P2P] delivering packet to {:?} at addr {:?}",
                 packet.dest, addr
             );
             let msg = bincode::serialize(&NetworkMsg::Packet(packet)).unwrap();
@@ -207,14 +207,14 @@ impl Router {
             conn.close()
         } else {
             println!(
-                "[CLI/RTR] we don't have a peer matching the destination for packet {:?}",
+                "[P2P] we don't have a peer matching the destination for packet {:?}",
                 packet
             );
         }
     }
 
     async fn apply(&mut self, cmd: RouterCmd) {
-        println!("[CLI/RTR] router cmd {:?}", cmd);
+        println!("[P2P] router cmd {:?}", cmd);
         match cmd {
             RouterCmd::SayHello(addr) => {
                 let peer = self.new_endpoint();
@@ -253,7 +253,7 @@ impl Router {
 }
 
 async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
-    println!("[CLI] listening on {:?}", endpoint.our_addr());
+    println!("[P2P] listening on {:?}", endpoint.our_addr());
 
     router_tx
         .send(RouterCmd::SayHello(endpoint.our_addr().unwrap()))
@@ -278,7 +278,7 @@ async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCm
                 }
             }
         }
-        Err(e) => println!("[CLI/ERROR] failed to start listening: {:?}", e),
+        Err(e) => println!("[P2P/ERROR] failed to start listening: {:?}", e),
     }
 }
 
