@@ -69,13 +69,6 @@ impl SharedState {
 }
 
 #[derive(Debug)]
-struct Proc {
-    qp2p: QuicP2p,
-    listeners: Vec<tokio::task::JoinHandle<()>>,
-    peers: HashSet<qp2p::Endpoint>,
-}
-
-#[derive(Debug)]
 struct Repl {
     state: SharedState,
     network_tx: mpsc::Sender<NetworkCmd>,
