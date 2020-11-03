@@ -9,7 +9,7 @@ use ed25519::Keypair;
 use ed25519::Signer;
 use ed25519::Verifier;
 use rand::rngs::OsRng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
@@ -35,14 +35,14 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     peers: HashSet<Actor>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
     algo_state: A::ReplicatedState,
     peers: HashSet<Actor>,
     delivered: VClock<Actor>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Packet<Op> {
     pub source: Actor,
     pub dest: Actor,
@@ -50,7 +50,7 @@ pub struct Packet<Op> {
     pub sig: Sig,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Payload<Op> {
     RequestValidation {
         msg: Msg<Op>,
@@ -65,13 +65,13 @@ pub enum Payload<Op> {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Msg<Op> {
     op: BFTOp<Op>,
     dot: Dot<Actor>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BFTOp<Op> {
     // TODO: support peers leaving
     MembershipNewPeer(Actor),
@@ -152,6 +152,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     pub fn read_state<V>(&self, f: impl FnOnce(&A) -> V) -> V {
         f(&self.algo)
+    }
+
+    pub fn apply(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
+        self.handle_packet(packet)
+        // TODO: replace handle_packet with apply
     }
 
     pub fn handle_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
@@ -309,7 +314,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
-            BFTOp::MembershipNewPeer(actor) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
+            BFTOp::MembershipNewPeer(_id) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
             BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
         };
 
