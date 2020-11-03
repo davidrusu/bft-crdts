@@ -76,12 +76,12 @@ impl Repl {
         match args {
             [ip_port] => match ip_port.parse::<SocketAddr>() {
                 Ok(addr) => {
-                    println!("Parsed an addr {:?}", addr);
+                    println!("[CLI/REPL] parsed addr {:?}", addr);
                     self.network_tx.try_send(RouterCmd::SayHello(addr)).unwrap();
                 }
-                Err(e) => println!("Bad peer spec {:?}", e),
+                Err(e) => println!("[CLI/REPL] bad addr {:?}", e),
             },
-            _ => println!("Bad peer spec {:?}", args),
+            _ => println!("help: peer <ip>:<port>"),
         };
         Ok(Action::Done)
     }
@@ -97,7 +97,7 @@ impl Repl {
                             .expect("Failed to queue packet");
                     }
                 }
-                Err(_) => println!("Failed to parse: '{}'", arg),
+                Err(_) => println!("[CLI/REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: add <v>"),
         }
@@ -115,7 +115,7 @@ impl Repl {
                             .expect("Failed to queue packet");
                     }
                 }
-                Err(_) => println!("Failed to parse: '{}'", arg),
+                Err(_) => println!("[CLI/REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: remove <v>"),
         }
@@ -197,24 +197,25 @@ impl Router {
 
     async fn deliver_packet(&self, packet: Packet) {
         if let Some((peer, addr)) = self.peers.get(&packet.dest) {
-            println!("Delivering to {:?} at addr {:?}", packet.dest, addr);
+            println!(
+                "[CLI/RTR] delivering packet to {:?} at addr {:?}",
+                packet.dest, addr
+            );
             let msg = bincode::serialize(&NetworkMsg::Packet(packet)).unwrap();
             let conn = peer.connect_to(&addr).await.unwrap();
-            println!("Connected to {:?}", addr);
             let _ = conn.send_uni(msg.clone().into()).await.unwrap();
-            println!("Sent to {:?}", addr);
             conn.close()
         } else {
             println!(
-                "We don't have a peer matching the destination for packet {:?}",
+                "[CLI/RTR] we don't have a peer matching the destination for packet {:?}",
                 packet
             );
         }
     }
 
-    async fn apply(&mut self, event: RouterCmd) {
-        println!("Applying {:?}", event);
-        match event {
+    async fn apply(&mut self, cmd: RouterCmd) {
+        println!("[CLI/RTR] router cmd {:?}", cmd);
+        match cmd {
             RouterCmd::SayHello(addr) => {
                 let peer = self.new_endpoint();
                 let conn = peer.connect_to(&addr).await.unwrap();
@@ -252,7 +253,7 @@ impl Router {
 }
 
 async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
-    println!("listening on {:?}", endpoint.our_addr());
+    println!("[CLI] listening on {:?}", endpoint.our_addr());
 
     router_tx
         .send(RouterCmd::SayHello(endpoint.our_addr().unwrap()))
@@ -277,7 +278,7 @@ async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCm
                 }
             }
         }
-        Err(e) => println!("Failed to start listening: {:?}", e),
+        Err(e) => println!("[CLI/ERROR] failed to start listening: {:?}", e),
     }
 }
 
