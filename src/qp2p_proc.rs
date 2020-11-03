@@ -10,20 +10,6 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
-fn qp2p() -> QuicP2p {
-    QuicP2p::with_config(
-        Some(Config {
-            port: Some(0),
-            ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            ..Default::default()
-        }),
-        // Make sure we start with an empty cache. Otherwise, we might get into unexpected state.
-        Default::default(),
-        true,
-    )
-    .expect("Error creating QuicP2p object")
-}
-
 #[derive(Default, Debug)]
 struct State {
     v: HashSet<u8>,
@@ -159,23 +145,35 @@ enum RouterCmd {
 #[derive(Debug, Serialize, Deserialize)]
 enum NetworkMsg {
     HelloMyNameIs(SocketAddr),
-    Msg(Op)
+    Msg(Op),
 }
 
 impl Router {
     fn new(state: SharedState) -> (Self, Endpoint) {
-	let qp2p = qp2p();
-	let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
-	let addr = endpoint.our_addr().expect("Failed to read our addr from endpoint");
-        (
-	    Self {
-		state,
-                qp2p,
-		addr,
-                peers: Default::default(),
-            },
-	    endpoint
-	)
+        let qp2p = QuicP2p::with_config(
+            Some(Config {
+                port: Some(0),
+                ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                ..Default::default()
+            }),
+            Default::default(),
+            true,
+        )
+        .expect("Error creating QuicP2p object");
+
+        let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
+        let addr = endpoint
+            .our_addr()
+            .expect("Failed to read our addr from endpoint");
+
+        let router = Self {
+            state,
+            qp2p,
+            addr,
+            peers: Default::default(),
+        };
+
+        (router, endpoint)
     }
 
     fn new_endpoint(&self) -> Endpoint {
@@ -192,14 +190,14 @@ impl Router {
         println!("Applying {:?}", event);
         match event {
             RouterCmd::AddPeer(addr) => {
-		if self.peers.iter().find(|(_, a)| a == &addr).is_none() {
+                if self.peers.iter().find(|(_, a)| a == &addr).is_none() {
                     let peer = self.new_endpoint();
                     let conn = peer.connect_to(&addr).await.unwrap();
                     self.peers.push((peer, addr));
                     let msg = bincode::serialize(&NetworkMsg::HelloMyNameIs(self.addr)).unwrap();
                     let _ = conn.send_uni(msg.into()).await.unwrap();
                     conn.close();
-		}
+                }
             }
             RouterCmd::Broadcast(op) => {
                 let msg = bincode::serialize(&NetworkMsg::Msg(op)).unwrap();
@@ -229,11 +227,12 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<RouterC
         Ok(mut conns) => {
             while let Some(mut msgs) = conns.next().await {
                 while let Some(msg) = msgs.next().await {
-                    let net_msg: NetworkMsg = bincode::deserialize(&msg.get_message_data()).unwrap();
-		    let cmd = match net_msg {
+                    let net_msg: NetworkMsg =
+                        bincode::deserialize(&msg.get_message_data()).unwrap();
+                    let cmd = match net_msg {
                         NetworkMsg::HelloMyNameIs(addr) => RouterCmd::AddPeer(addr),
-			NetworkMsg::Msg(op) => RouterCmd::Apply(op),
-		    };
+                        NetworkMsg::Msg(op) => RouterCmd::Apply(op),
+                    };
                     network_tx
                         .send(cmd)
                         .await
