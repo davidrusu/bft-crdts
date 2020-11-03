@@ -71,12 +71,12 @@ impl SharedState {
 #[derive(Debug)]
 struct Repl {
     state: SharedState,
-    network_tx: mpsc::Sender<NetworkCmd>,
+    network_tx: mpsc::Sender<RouterCmd>,
 }
 
 #[cmdr]
 impl Repl {
-    fn new(state: SharedState, network_tx: mpsc::Sender<NetworkCmd>) -> Self {
+    fn new(state: SharedState, network_tx: mpsc::Sender<RouterCmd>) -> Self {
         Self { state, network_tx }
     }
 
@@ -86,7 +86,7 @@ impl Repl {
             [ip_port] => match ip_port.parse::<SocketAddr>() {
                 Ok(addr) => {
                     println!("Parsed an addr {:?}", addr);
-                    self.network_tx.try_send(NetworkCmd::AddPeer(addr)).unwrap();
+                    self.network_tx.try_send(RouterCmd::AddPeer(addr)).unwrap();
                 }
                 Err(e) => println!("Bad peer spec {:?}", e),
             },
@@ -101,7 +101,7 @@ impl Repl {
             [arg] => match arg.parse::<u8>() {
                 Ok(v) => {
                     self.network_tx
-                        .try_send(NetworkCmd::Broadcast(Op::Add(v)))
+                        .try_send(RouterCmd::Broadcast(Op::Add(v)))
                         .expect("Failed to broadcast Add");
                 }
                 Err(_) => println!("Failed to parse: '{}'", arg),
@@ -117,7 +117,7 @@ impl Repl {
             [arg] => match arg.parse::<u8>() {
                 Ok(v) => {
                     self.network_tx
-                        .try_send(NetworkCmd::Broadcast(Op::Remove(v)))
+                        .try_send(RouterCmd::Broadcast(Op::Remove(v)))
                         .expect("Failed to broadcast Remove");
                 }
                 Err(_) => println!("Failed to parse: '{}'", arg),
@@ -141,47 +141,68 @@ impl Repl {
 }
 
 #[derive(Debug)]
-struct Network {
+struct Router {
     state: SharedState,
     qp2p: QuicP2p,
+    addr: SocketAddr,
     peers: Vec<(Endpoint, SocketAddr)>,
 }
 
 #[derive(Debug)]
-enum NetworkCmd {
+enum RouterCmd {
     AddPeer(SocketAddr),
     Broadcast(Op),
     Apply(Op),
 }
 
-impl Network {
-    fn new(state: SharedState) -> Self {
-        Self {
-            state,
-            qp2p: qp2p(),
-            peers: Default::default(),
-        }
+
+#[derive(Debug, Serialize, Deserialize)]
+enum NetworkMsg {
+    HelloMyNameIs(SocketAddr),
+    Msg(Op)
+}
+
+impl Router {
+    fn new(state: SharedState) -> (Self, Endpoint) {
+	let qp2p = qp2p();
+	let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
+	let addr = endpoint.our_addr().expect("Failed to read our addr from endpoint");
+        (
+	    Self {
+		state,
+                qp2p,
+		addr,
+                peers: Default::default(),
+            },
+	    endpoint
+	)
     }
 
     fn new_endpoint(&self) -> Endpoint {
         self.qp2p.new_endpoint().expect("Failed to create endpoint")
     }
 
-    async fn listen_for_cmds(mut self, mut net_rx: mpsc::Receiver<NetworkCmd>) {
+    async fn listen_for_cmds(mut self, mut net_rx: mpsc::Receiver<RouterCmd>) {
         while let Some(net_cmd) = net_rx.recv().await {
             self.apply(net_cmd).await;
         }
     }
 
-    async fn apply(&mut self, event: NetworkCmd) {
+    async fn apply(&mut self, event: RouterCmd) {
         println!("Applying {:?}", event);
         match event {
-            NetworkCmd::AddPeer(addr) => {
-                let peer = self.new_endpoint();
-                self.peers.push((peer, addr));
+            RouterCmd::AddPeer(addr) => {
+		if self.peers.iter().find(|(_, a)| a == &addr).is_none() {
+                    let peer = self.new_endpoint();
+                    let conn = peer.connect_to(&addr).await.unwrap();
+                    self.peers.push((peer, addr));
+                    let msg = bincode::serialize(&NetworkMsg::HelloMyNameIs(self.addr)).unwrap();
+                    let _ = conn.send_uni(msg.into()).await.unwrap();
+                    conn.close();
+		}
             }
-            NetworkCmd::Broadcast(op) => {
-                let msg = bincode::serialize(&op).unwrap();
+            RouterCmd::Broadcast(op) => {
+                let msg = bincode::serialize(&NetworkMsg::Msg(op)).unwrap();
                 for (peer, addr) in self.peers.iter() {
                     println!("Broadcasting to addr {:?}", addr);
                     let conn = peer.connect_to(&addr).await.unwrap();
@@ -191,33 +212,33 @@ impl Network {
                     conn.close()
                 }
             }
-            NetworkCmd::Apply(op) => self.state.apply(op),
+            RouterCmd::Apply(op) => self.state.apply(op),
         }
     }
 }
 
-async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<NetworkCmd>) {
+async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<RouterCmd>) {
     println!("listening on {:?}", endpoint.our_addr());
 
     network_tx
-        .send(NetworkCmd::AddPeer(endpoint.our_addr().unwrap()))
+        .send(RouterCmd::AddPeer(endpoint.our_addr().unwrap()))
         .await
         .expect("Failed to send command to add self as peer");
 
     match endpoint.listen() {
-        Ok(mut conn) => {
-            println!("Got conn");
-            while let Some(mut msgs) = conn.next().await {
-                println!("Got msgs");
+        Ok(mut conns) => {
+            while let Some(mut msgs) = conns.next().await {
                 while let Some(msg) = msgs.next().await {
-                    println!("Got msg");
-                    let op: Op = bincode::deserialize(&msg.get_message_data()).unwrap();
+                    let net_msg: NetworkMsg = bincode::deserialize(&msg.get_message_data()).unwrap();
+		    let cmd = match net_msg {
+                        NetworkMsg::HelloMyNameIs(addr) => RouterCmd::AddPeer(addr),
+			NetworkMsg::Msg(op) => RouterCmd::Apply(op),
+		    };
                     network_tx
-                        .send(NetworkCmd::Apply(op))
+                        .send(cmd)
                         .await
                         .expect("Failed to send Apply network command");
                 }
-                println!("Finished msgs");
             }
         }
         Err(e) => println!("Failed to start listening: {:?}", e),
@@ -227,11 +248,11 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<Network
 #[tokio::main]
 async fn main() {
     let state = SharedState::new();
-    let network = Network::new(state.clone());
+    let (network, endpoint) = Router::new(state.clone());
 
     let (net_tx, net_rx) = mpsc::channel(100);
 
-    tokio::spawn(listen_for_ops(network.new_endpoint(), net_tx.clone()));
+    tokio::spawn(listen_for_ops(endpoint, net_tx.clone()));
     tokio::spawn(network.listen_for_cmds(net_rx));
     cmd_loop(&mut Repl::new(state, net_tx)).expect("Failure in REPL");
 }
