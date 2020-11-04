@@ -3,9 +3,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use ed25519::{PublicKey, Signature};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Eq, Clone, Copy, Serialize)]
+#[derive(Eq, Clone, Copy, Serialize, Deserialize)]
 pub struct Actor(pub PublicKey);
 
 impl PartialEq for Actor {
@@ -45,7 +45,7 @@ impl fmt::Debug for Actor {
     }
 }
 
-#[derive(Eq, Clone, Copy, Serialize)]
+#[derive(Eq, Clone, Copy, Serialize, Deserialize)]
 pub struct Sig(pub Signature);
 
 impl PartialEq for Sig {

@@ -2,81 +2,72 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-use cmdr::*; // cli repl
+use cmdr::*;
 
 use qp2p::{self, Config, Endpoint, QuicP2p};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
-fn qp2p() -> QuicP2p {
-    QuicP2p::with_config(
-        Some(Config {
-            port: Some(0),
-            ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            ..Default::default()
-        }),
-        // Make sure we start with an empty cache. Otherwise, we might get into unexpected state.
-        Default::default(),
-        true,
-    )
-    .expect("Error creating QuicP2p object")
-}
+pub mod actor;
+pub mod deterministic_secure_broadcast;
+pub mod net;
+pub mod orswot;
+pub mod traits;
 
-#[derive(Default, Debug)]
-struct State {
-    v: HashSet<u8>,
-}
+use actor::Actor;
+use deterministic_secure_broadcast as dsb;
+use traits::SecureBroadcastAlgorithm;
 
-#[derive(Debug, Serialize, Deserialize)]
-enum Op {
-    Add(u8),
-    Remove(u8),
-}
-
-impl State {
-    fn apply(&mut self, op: Op) {
-        match op {
-            Op::Add(v) => self.v.insert(v),
-            Op::Remove(v) => self.v.remove(&v),
-        };
-    }
-
-    fn read(&self) -> HashSet<u8> {
-        self.v.clone()
-    }
-}
+type Value = u64;
+type State = orswot::BFTOrswot<Value>;
+type DSB = dsb::SecureBroadcastProc<State>; // rename to SecureBroadcast
+type Packet = dsb::Packet<<State as SecureBroadcastAlgorithm>::Op>;
 
 #[derive(Debug, Clone)]
-struct SharedState {
-    shared: Arc<Mutex<State>>,
+struct SharedDSB {
+    dsb: Arc<Mutex<DSB>>,
 }
-impl SharedState {
+impl SharedDSB {
     fn new() -> Self {
         Self {
-            shared: Arc::new(Mutex::new(Default::default())),
+            dsb: Arc::new(Mutex::new(DSB::new(Default::default()))),
         }
     }
 
-    fn apply(&self, op: Op) {
-        self.shared.lock().unwrap().apply(op);
+    fn actor(&self) -> Actor {
+        self.dsb.lock().unwrap().actor()
     }
 
-    fn read(&self) -> HashSet<u8> {
-        self.shared.lock().unwrap().read()
+    fn exec_algo_op(
+        &self,
+        f: impl FnOnce(&State) -> Option<<State as SecureBroadcastAlgorithm>::Op>,
+    ) -> Vec<Packet> {
+        self.dsb.lock().unwrap().exec_algo_op(f)
+    }
+
+    fn apply(&self, packet: Packet) -> Vec<Packet> {
+        self.dsb.lock().unwrap().apply(packet)
+    }
+
+    fn read(&self) -> HashSet<Value> {
+        self.dsb
+            .lock()
+            .unwrap()
+            .read_state(|orswot| orswot.state().read().val)
     }
 }
 
 #[derive(Debug)]
 struct Repl {
-    state: SharedState,
+    state: SharedDSB,
     network_tx: mpsc::Sender<RouterCmd>,
 }
 
 #[cmdr]
 impl Repl {
-    fn new(state: SharedState, network_tx: mpsc::Sender<RouterCmd>) -> Self {
+    fn new(state: SharedDSB, network_tx: mpsc::Sender<RouterCmd>) -> Self {
         Self { state, network_tx }
     }
 
@@ -85,12 +76,12 @@ impl Repl {
         match args {
             [ip_port] => match ip_port.parse::<SocketAddr>() {
                 Ok(addr) => {
-                    println!("Parsed an addr {:?}", addr);
-                    self.network_tx.try_send(RouterCmd::AddPeer(addr)).unwrap();
+                    println!("[REPL] parsed addr {:?}", addr);
+                    self.network_tx.try_send(RouterCmd::SayHello(addr)).unwrap();
                 }
-                Err(e) => println!("Bad peer spec {:?}", e),
+                Err(e) => println!("[REPL] bad addr {:?}", e),
             },
-            _ => println!("Bad peer spec {:?}", args),
+            _ => println!("help: peer <ip>:<port>"),
         };
         Ok(Action::Done)
     }
@@ -98,13 +89,15 @@ impl Repl {
     #[cmd]
     fn add(&mut self, args: &[String]) -> CommandResult {
         match args {
-            [arg] => match arg.parse::<u8>() {
+            [arg] => match arg.parse::<Value>() {
                 Ok(v) => {
-                    self.network_tx
-                        .try_send(RouterCmd::Broadcast(Op::Add(v)))
-                        .expect("Failed to broadcast Add");
+                    for packet in self.state.exec_algo_op(|orswot| Some(orswot.add(v))) {
+                        self.network_tx
+                            .try_send(RouterCmd::Deliver(packet))
+                            .expect("Failed to queue packet");
+                    }
                 }
-                Err(_) => println!("Failed to parse: '{}'", arg),
+                Err(_) => println!("[REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: add <v>"),
         }
@@ -114,13 +107,15 @@ impl Repl {
     #[cmd]
     fn remove(&mut self, args: &[String]) -> CommandResult {
         match args {
-            [arg] => match arg.parse::<u8>() {
+            [arg] => match arg.parse::<Value>() {
                 Ok(v) => {
-                    self.network_tx
-                        .try_send(RouterCmd::Broadcast(Op::Remove(v)))
-                        .expect("Failed to broadcast Remove");
+                    for packet in self.state.exec_algo_op(|orswot| orswot.rm(v)) {
+                        self.network_tx
+                            .try_send(RouterCmd::Deliver(packet))
+                            .expect("Failed to queue packet");
+                    }
                 }
-                Err(_) => println!("Failed to parse: '{}'", arg),
+                Err(_) => println!("[REPL] bad arg: '{}'", arg),
             },
             _ => println!("help: remove <v>"),
         }
@@ -142,40 +137,52 @@ impl Repl {
 
 #[derive(Debug)]
 struct Router {
-    state: SharedState,
+    state: SharedDSB,
     qp2p: QuicP2p,
     addr: SocketAddr,
-    peers: Vec<(Endpoint, SocketAddr)>,
+    peers: HashMap<Actor, (Endpoint, SocketAddr)>,
 }
 
 #[derive(Debug)]
 enum RouterCmd {
-    AddPeer(SocketAddr),
-    Broadcast(Op),
-    Apply(Op),
+    SayHello(SocketAddr),
+    AddPeer(Actor, SocketAddr),
+    Deliver(Packet),
+    Apply(Packet),
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 enum NetworkMsg {
-    HelloMyNameIs(SocketAddr),
-    Msg(Op)
+    HelloMyNameIs(Actor, SocketAddr),
+    Packet(Packet),
 }
 
 impl Router {
-    fn new(state: SharedState) -> (Self, Endpoint) {
-	let qp2p = qp2p();
-	let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
-	let addr = endpoint.our_addr().expect("Failed to read our addr from endpoint");
-        (
-	    Self {
-		state,
-                qp2p,
-		addr,
-                peers: Default::default(),
-            },
-	    endpoint
-	)
+    fn new(state: SharedDSB) -> (Self, Endpoint) {
+        let qp2p = QuicP2p::with_config(
+            Some(Config {
+                port: Some(0),
+                ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                ..Default::default()
+            }),
+            Default::default(),
+            true,
+        )
+        .expect("Error creating QuicP2p object");
+
+        let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
+        let addr = endpoint
+            .our_addr()
+            .expect("Failed to read our addr from endpoint");
+
+        let router = Self {
+            state,
+            qp2p,
+            addr,
+            peers: Default::default(),
+        };
+
+        (router, endpoint)
     }
 
     fn new_endpoint(&self) -> Endpoint {
@@ -188,40 +195,68 @@ impl Router {
         }
     }
 
-    async fn apply(&mut self, event: RouterCmd) {
-        println!("Applying {:?}", event);
-        match event {
-            RouterCmd::AddPeer(addr) => {
-		if self.peers.iter().find(|(_, a)| a == &addr).is_none() {
+    async fn deliver_packet(&self, packet: Packet) {
+        if let Some((peer, addr)) = self.peers.get(&packet.dest) {
+            println!(
+                "[P2P] delivering packet to {:?} at addr {:?}",
+                packet.dest, addr
+            );
+            let msg = bincode::serialize(&NetworkMsg::Packet(packet)).unwrap();
+            let conn = peer.connect_to(&addr).await.unwrap();
+            let _ = conn.send_uni(msg.clone().into()).await.unwrap();
+            conn.close()
+        } else {
+            println!(
+                "[P2P] we don't have a peer matching the destination for packet {:?}",
+                packet
+            );
+        }
+    }
+
+    async fn apply(&mut self, cmd: RouterCmd) {
+        println!("[P2P] router cmd {:?}", cmd);
+        match cmd {
+            RouterCmd::SayHello(addr) => {
+                let peer = self.new_endpoint();
+                let conn = peer.connect_to(&addr).await.unwrap();
+                // self.peers.insert(actor, (peer, addr));
+                let msg =
+                    bincode::serialize(&NetworkMsg::HelloMyNameIs(self.state.actor(), self.addr))
+                        .unwrap();
+                let _ = conn.send_uni(msg.into()).await.unwrap();
+                conn.close();
+            }
+            RouterCmd::AddPeer(actor, addr) => {
+                if !self.peers.contains_key(&actor) {
                     let peer = self.new_endpoint();
                     let conn = peer.connect_to(&addr).await.unwrap();
-                    self.peers.push((peer, addr));
-                    let msg = bincode::serialize(&NetworkMsg::HelloMyNameIs(self.addr)).unwrap();
+                    self.peers.insert(actor, (peer, addr));
+                    let msg = bincode::serialize(&NetworkMsg::HelloMyNameIs(
+                        self.state.actor(),
+                        self.addr,
+                    ))
+                    .unwrap();
                     let _ = conn.send_uni(msg.into()).await.unwrap();
                     conn.close();
-		}
-            }
-            RouterCmd::Broadcast(op) => {
-                let msg = bincode::serialize(&NetworkMsg::Msg(op)).unwrap();
-                for (peer, addr) in self.peers.iter() {
-                    println!("Broadcasting to addr {:?}", addr);
-                    let conn = peer.connect_to(&addr).await.unwrap();
-                    println!("Connected to {:?}", addr);
-                    let _ = conn.send_uni(msg.clone().into()).await.unwrap();
-                    println!("Sent to {:?}", addr);
-                    conn.close()
                 }
             }
-            RouterCmd::Apply(op) => self.state.apply(op),
+            RouterCmd::Deliver(packet) => {
+                self.deliver_packet(packet).await;
+            }
+            RouterCmd::Apply(op_packet) => {
+                for packet in self.state.apply(op_packet) {
+                    self.deliver_packet(packet).await;
+                }
+            }
         }
     }
 }
 
-async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<RouterCmd>) {
-    println!("listening on {:?}", endpoint.our_addr());
+async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
+    println!("[P2P] listening on {:?}", endpoint.our_addr());
 
-    network_tx
-        .send(RouterCmd::AddPeer(endpoint.our_addr().unwrap()))
+    router_tx
+        .send(RouterCmd::SayHello(endpoint.our_addr().unwrap()))
         .await
         .expect("Failed to send command to add self as peer");
 
@@ -229,30 +264,31 @@ async fn listen_for_ops(endpoint: Endpoint, mut network_tx: mpsc::Sender<RouterC
         Ok(mut conns) => {
             while let Some(mut msgs) = conns.next().await {
                 while let Some(msg) = msgs.next().await {
-                    let net_msg: NetworkMsg = bincode::deserialize(&msg.get_message_data()).unwrap();
-		    let cmd = match net_msg {
-                        NetworkMsg::HelloMyNameIs(addr) => RouterCmd::AddPeer(addr),
-			NetworkMsg::Msg(op) => RouterCmd::Apply(op),
-		    };
-                    network_tx
+                    let net_msg: NetworkMsg =
+                        bincode::deserialize(&msg.get_message_data()).unwrap();
+                    let cmd = match net_msg {
+                        NetworkMsg::HelloMyNameIs(actor, addr) => RouterCmd::AddPeer(actor, addr),
+                        NetworkMsg::Packet(packet) => RouterCmd::Apply(packet),
+                    };
+
+                    router_tx
                         .send(cmd)
                         .await
-                        .expect("Failed to send Apply network command");
+                        .expect("Failed to send router command");
                 }
             }
         }
-        Err(e) => println!("Failed to start listening: {:?}", e),
+        Err(e) => println!("[P2P/ERROR] failed to start listening: {:?}", e),
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let state = SharedState::new();
-    let (network, endpoint) = Router::new(state.clone());
+    let state = SharedDSB::new();
+    let (router, endpoint) = Router::new(state.clone());
+    let (router_tx, router_rx) = mpsc::channel(100);
 
-    let (net_tx, net_rx) = mpsc::channel(100);
-
-    tokio::spawn(listen_for_ops(endpoint, net_tx.clone()));
-    tokio::spawn(network.listen_for_cmds(net_rx));
-    cmd_loop(&mut Repl::new(state, net_tx)).expect("Failure in REPL");
+    tokio::spawn(listen_for_ops(endpoint, router_tx.clone()));
+    tokio::spawn(router.listen_for_cmds(router_rx));
+    cmd_loop(&mut Repl::new(state, router_tx)).expect("Failure in REPL");
 }
