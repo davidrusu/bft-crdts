@@ -273,7 +273,7 @@ impl Router {
     }
 }
 
-async fn listen_for_ops(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
+async fn listen_for_network_msgs(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
     println!("[P2P] listening on {:?}", endpoint.our_addr());
 
     router_tx
@@ -309,7 +309,7 @@ async fn main() {
     let (router, endpoint) = Router::new(state.clone());
     let (router_tx, router_rx) = mpsc::channel(100);
 
-    tokio::spawn(listen_for_ops(endpoint, router_tx.clone()));
+    tokio::spawn(listen_for_network_msgs(endpoint, router_tx.clone()));
     tokio::spawn(router.listen_for_cmds(router_rx));
     cmd_loop(&mut Repl::new(state, router_tx)).expect("Failure in REPL");
 }
