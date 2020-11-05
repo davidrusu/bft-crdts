@@ -1,5 +1,5 @@
 /// An implementation of deterministic SecureBroadcast.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::actor::{Actor, Sig};
 use crate::traits::SecureBroadcastAlgorithm;
@@ -17,7 +17,7 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     keypair: Keypair,
 
     // Msgs this process has initiated and is waiting on BFT agreement for from the network.
-    pending_proof: HashMap<Msg<A::Op>, HashMap<Actor, Sig>>,
+    pending_proof: HashMap<Msg<A::Op>, BTreeMap<Actor, Sig>>,
 
     // The clock representing the most recently received messages from each process.
     // These are messages that have been acknowledged but not yet
@@ -32,13 +32,13 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     algo: A,
 
     // The set of members in this network.
-    peers: HashSet<Actor>,
+    peers: BTreeSet<Actor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
     algo_state: A::ReplicatedState,
-    peers: HashSet<Actor>,
+    peers: BTreeSet<Actor>,
     delivered: VClock<Actor>,
 }
 
@@ -61,7 +61,7 @@ pub enum Payload<Op> {
     },
     ProofOfAgreement {
         msg: Msg<Op>,
-        proof: HashMap<Actor, Sig>,
+        proof: BTreeMap<Actor, Sig>,
     },
 }
 
@@ -79,7 +79,7 @@ enum BFTOp<Op> {
 }
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
-    pub fn new(known_peers: HashSet<Actor>) -> Self {
+    pub fn new(known_peers: BTreeSet<Actor>) -> Self {
         let keypair = Keypair::generate(&mut OsRng);
         let actor = Actor(keypair.public);
 
@@ -120,7 +120,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    pub fn peers(&self) -> HashSet<Actor> {
+    pub fn peers(&self) -> BTreeSet<Actor> {
         self.peers.clone()
     }
 
@@ -253,7 +253,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
         if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
             println!(
-                "[DSB/SIG] Msg failed verification {}->{}",
+                "[DSB/SIG] Msg failed signature verification {}->{}",
                 packet.source,
                 self.actor(),
             );
