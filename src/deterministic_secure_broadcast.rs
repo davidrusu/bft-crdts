@@ -124,6 +124,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.peers.clone()
     }
 
+    pub fn trust_peer(&mut self, peer: Actor) {
+        self.peers.insert(peer);
+    }
+
     pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
         self.exec_bft_op(BFTOp::MembershipNewPeer(self.actor()))
     }

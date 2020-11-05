@@ -41,6 +41,14 @@ impl SharedDSB {
         self.dsb.lock().unwrap().actor()
     }
 
+    fn peers(&self) -> BTreeSet<Actor> {
+        self.dsb.lock().unwrap().peers()
+    }
+
+    fn trust_peer(&mut self, peer: Actor) {
+        self.dsb.lock().unwrap().trust_peer(peer);
+    }
+
     fn exec_algo_op(
         &self,
         f: impl FnOnce(&State) -> Option<<State as SecureBroadcastAlgorithm>::Op>,
@@ -92,6 +100,19 @@ impl Repl {
         match args {
             [] => self.network_tx.try_send(RouterCmd::ListPeers).unwrap(),
             _ => println!("help: peers expects no arguments"),
+        };
+        Ok(Action::Done)
+    }
+
+    #[cmd]
+    fn trust(&mut self, args: &[String]) -> CommandResult {
+        match args {
+            [actor_id] => {
+                self.network_tx
+                    .try_send(RouterCmd::Trust(actor_id.to_string()))
+                    .unwrap();
+            }
+            _ => println!("help: trust id:8sdkgalsd"),
         };
         Ok(Action::Done)
     }
@@ -156,6 +177,7 @@ struct Router {
 #[derive(Debug)]
 enum RouterCmd {
     ListPeers,
+    Trust(String),
     SayHello(SocketAddr),
     AddPeer(Actor, SocketAddr),
     Deliver(Packet),
@@ -235,6 +257,29 @@ impl Router {
                     } else {
                         println!("{:?}@{:?}", actor, addr);
                     }
+                }
+            }
+            RouterCmd::Trust(actor_id) => {
+                let matching_actors: Vec<Actor> = self
+                    .peers
+                    .iter()
+                    .map(|(actor, _)| actor)
+                    .cloned()
+                    .filter(|actor| format!("{:?}", actor).starts_with(&actor_id))
+                    .collect();
+
+                if matching_actors.len() > 1 {
+                    println!("Ambiguous actor id, more than one actor matches:");
+
+                    for actor in matching_actors {
+                        println!("{:?}", actor);
+                    }
+                } else if matching_actors.len() == 0 {
+                    println!("No actors with that actor id");
+                } else {
+                    let actor = matching_actors[0];
+                    println!("Trusting actor: {:?}", actor);
+                    self.state.trust_peer(actor); // TODO: rename state to dsb
                 }
             }
             RouterCmd::SayHello(addr) => {
