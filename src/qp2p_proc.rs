@@ -29,6 +29,7 @@ type Packet = dsb::Packet<<State as SecureBroadcastAlgorithm>::Op>;
 struct SharedDSB {
     dsb: Arc<Mutex<DSB>>,
 }
+
 impl SharedDSB {
     fn new() -> Self {
         Self {
@@ -82,6 +83,15 @@ impl Repl {
                 Err(e) => println!("[REPL] bad addr {:?}", e),
             },
             _ => println!("help: peer <ip>:<port>"),
+        };
+        Ok(Action::Done)
+    }
+
+    #[cmd]
+    fn peers(&mut self, args: &[String]) -> CommandResult {
+        match args {
+            [] => self.network_tx.try_send(RouterCmd::ListPeers).unwrap(),
+            _ => println!("help: peers expects no arguments"),
         };
         Ok(Action::Done)
     }
@@ -145,6 +155,7 @@ struct Router {
 
 #[derive(Debug)]
 enum RouterCmd {
+    ListPeers,
     SayHello(SocketAddr),
     AddPeer(Actor, SocketAddr),
     Deliver(Packet),
@@ -216,6 +227,16 @@ impl Router {
     async fn apply(&mut self, cmd: RouterCmd) {
         println!("[P2P] router cmd {:?}", cmd);
         match cmd {
+            RouterCmd::ListPeers => {
+                let voting_peers = self.state.peers();
+                for (actor, (_, addr)) in self.peers.iter() {
+                    if voting_peers.contains(actor) {
+                        println!("{:?}@{:?}\t(voting)", actor, addr);
+                    } else {
+                        println!("{:?}@{:?}", actor, addr);
+                    }
+                }
+            }
             RouterCmd::SayHello(addr) => {
                 let peer = self.new_endpoint();
                 let conn = peer.connect_to(&addr).await.unwrap();
