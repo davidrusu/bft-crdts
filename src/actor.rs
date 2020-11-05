@@ -35,7 +35,7 @@ impl Ord for Actor {
 impl fmt::Display for Actor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.as_bytes();
-        write!(f, "i:{}..", hex::encode(&bytes[..2]))
+        write!(f, "i:{}", hex::encode(&bytes[..2]))
     }
 }
 
@@ -63,7 +63,7 @@ impl Hash for Sig {
 impl fmt::Display for Sig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.0.to_bytes();
-        write!(f, "sig:{}..", hex::encode(&bytes[..2]))
+        write!(f, "sig:{}", hex::encode(&bytes[..2]))
     }
 }
 
