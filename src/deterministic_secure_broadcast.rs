@@ -319,7 +319,13 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
             BFTOp::MembershipNewPeer(_id) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
-            BFTOp::AlgoOp(op) => vec![(self.algo.validate(&from, &op), "failed algo validation")],
+            BFTOp::AlgoOp(op) => vec![
+                (
+                    self.peers.contains(&from),
+                    "source is not a member of the network",
+                ),
+                (self.algo.validate(&from, &op), "failed algo validation"),
+            ],
         };
 
         validation_tests
