@@ -6,7 +6,7 @@ use cmdr::*;
 
 use qp2p::{self, Config, Endpoint, QuicP2p};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 

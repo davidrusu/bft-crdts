@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use crate::actor::Actor;
 use crate::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
@@ -20,7 +20,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
 
     /// The largest set of procs who mutually see each other as peers
     /// are considered to be the network members.
-    pub fn members(&self) -> HashSet<Actor> {
+    pub fn members(&self) -> BTreeSet<Actor> {
         self.procs
             .iter()
             .map(|proc| {
@@ -29,14 +29,14 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
                     .flat_map(|peer| self.proc_from_actor(peer))
                     .filter(|peer_proc| peer_proc.peers().contains(&proc.actor()))
                     .map(|peer_proc| peer_proc.actor())
-                    .collect::<HashSet<_>>()
+                    .collect::<BTreeSet<_>>()
             })
             .max_by_key(|members| members.len())
             .unwrap_or_default()
     }
 
     /// Fetch the actors for each process in the network
-    pub fn actors(&self) -> HashSet<Actor> {
+    pub fn actors(&self) -> BTreeSet<Actor> {
         self.procs.iter().map(|p| p.actor()).collect()
     }
 
@@ -87,7 +87,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         // TODO: this should be done through a message passing interface.
 
         // For each proc, collect the procs who considers this proc it's peer.
-        let mut peer_reverse_index: HashMap<Actor, HashSet<Actor>> = HashMap::new();
+        let mut peer_reverse_index: HashMap<Actor, BTreeSet<Actor>> = HashMap::new();
 
         for proc in self.procs.iter() {
             for peer in proc.peers() {
