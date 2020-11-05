@@ -83,22 +83,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         let keypair = Keypair::generate(&mut OsRng);
         let actor = Actor(keypair.public);
 
-        let peers = if known_peers.is_empty() {
-            // This is the genesis proc. It must be treated as a special case.
-            //
-            // Under normal conditions when a proc joins an existing network, it will only
-            // add itself to it's own peer set once it receives confirmation from the rest
-            // of the network that it has been accepted as a member of the network.
-            std::iter::once(actor).collect()
-        } else {
-            known_peers
-        };
-
         Self {
             keypair,
             pending_proof: HashMap::new(),
             algo: A::new(actor),
-            peers,
+            peers: known_peers,
             delivered: VClock::new(),
             received: VClock::new(),
         }
