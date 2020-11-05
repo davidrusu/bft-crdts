@@ -49,6 +49,10 @@ impl SharedDSB {
         self.dsb.lock().unwrap().trust_peer(peer);
     }
 
+    fn request_membership(&mut self) -> Vec<Packet> {
+        self.dsb.lock().unwrap().request_membership()
+    }
+
     fn exec_algo_op(
         &self,
         f: impl FnOnce(&State) -> Option<<State as SecureBroadcastAlgorithm>::Op>,
@@ -113,6 +117,21 @@ impl Repl {
                     .unwrap();
             }
             _ => println!("help: trust id:8sdkgalsd"),
+        };
+        Ok(Action::Done)
+    }
+
+    #[cmd]
+    fn join(&mut self, args: &[String]) -> CommandResult {
+        match args {
+            [] => {
+                for packet in self.state.request_membership() {
+                    self.network_tx
+                        .try_send(RouterCmd::Deliver(packet))
+                        .expect("Failed to queue packet");
+                }
+            }
+            _ => println!("help: join takes no arguments"),
         };
         Ok(Action::Done)
     }
