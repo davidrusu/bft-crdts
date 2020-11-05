@@ -342,7 +342,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn quorum(&self, n: usize) -> bool {
-        n * 3 >= self.peers.len() * 2
+        n * 3 > self.peers.len() * 2
     }
 
     fn broadcast(&self, payload: &Payload<A::Op>) -> Vec<Packet<A::Op>> {
