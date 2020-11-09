@@ -99,5 +99,53 @@ mod tests {
 
             TestResult::passed()
         }
+
+        fn prop_interpreter(instructions: Vec<(u8, u8, u8)>) -> bool{
+            let mut net: Net<BFTOrswot<u8>> = Net::new();
+            let genesis_actor = net.initialize_proc();
+            net.on_proc_mut(&genesis_actor, |p| p.trust_peer(genesis_actor)).unwrap();
+
+            let mut pending_packets = Vec::new();
+            for instr in instructions {
+                let members: Vec<_> = net.members().into_iter().collect();
+                match instr {
+                    (0, _, _) => {
+                        // add peer
+                        let actor = net.initialize_proc();
+                        net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
+                        let genesis_state = net.proc_from_actor(&genesis_actor).unwrap().state();
+                        net.on_proc_mut(&actor, |p| p.sync_from(genesis_state));
+                    }
+                    (1, actor_idx, _) if !members.is_empty() => {
+                        // request membership
+                        let actor = members[actor_idx as usize % members.len()].clone();
+                        pending_packets.extend(net.on_proc(&actor, |p| p.request_membership()).unwrap())
+                    }
+                    (2, actor_idx, v) if !members.is_empty() => {
+                        // add v
+                        let actor = members[actor_idx as usize % members.len()].clone();
+                        pending_packets.extend(
+                            net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap());
+                    }
+                    (3, actor_idx, v)  if !members.is_empty() => {
+                        // remove v
+                        let actor = members[actor_idx as usize % members.len()].clone();
+                        pending_packets.extend(
+                            net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v))).unwrap());
+                    }
+                    (4, packet_idx, _) if !pending_packets.is_empty() => {
+                        // deliver packet
+                        let packet = pending_packets.remove(packet_idx as usize % pending_packets.len());
+
+                        pending_packets.extend(net.deliver_packet(packet));
+                    }
+                    _ => ()
+                }
+            }
+
+            net.run_packets_to_completion(pending_packets);
+            assert!(net.members_are_in_agreement());
+            true
+        }
     }
 }
