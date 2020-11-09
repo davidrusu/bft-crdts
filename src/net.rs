@@ -42,7 +42,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
 
     /// Initialize a new process (NOTE: we do not request membership from the network automatically)
     pub fn initialize_proc(&mut self) -> Actor {
-        let proc = SecureBroadcastProc::new(self.members());
+        let proc = SecureBroadcastProc::new();
         let actor = proc.actor();
         self.procs.push(proc);
         actor
@@ -85,25 +85,13 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
     /// use message passing and we share process state directly.
     pub fn anti_entropy(&mut self) {
         // TODO: this should be done through a message passing interface.
+        println!("[NET] anti-entropy");
 
-        // For each proc, collect the procs who considers this proc it's peer.
-        let mut peer_reverse_index: HashMap<Actor, BTreeSet<Actor>> = HashMap::new();
-
-        for proc in self.procs.iter() {
-            for peer in proc.peers() {
-                peer_reverse_index
-                    .entry(peer)
-                    .or_default()
-                    .insert(proc.actor());
-            }
-        }
-
-        for (proc_actor, reverse_peers) in peer_reverse_index {
-            // other procs that consider this proc a peer, will share there state with this proc
-            for reverse_peer in reverse_peers {
-                let source_peer_state = self.proc_from_actor(&reverse_peer).unwrap().state();
-                self.on_proc_mut(&proc_actor, |p| p.sync_from(source_peer_state));
-                println!("[TEST_NET] {} -> {}", reverse_peer, proc_actor);
+        let peer_map: HashMap<_, _> = self.procs.iter().map(|p| (p.actor(), p.peers())).collect();
+        for (proc, peers) in peer_map {
+            for peer in peers {
+                let peer_state = self.proc_from_actor(&peer).unwrap().state();
+                self.on_proc_mut(&proc, |p| p.sync_from(peer_state));
             }
         }
     }

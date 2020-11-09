@@ -26,8 +26,8 @@ mod tests {
         for _ in 0..(n_procs - 1) {
             let actor = net.initialize_proc();
             net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
-            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
             net.anti_entropy();
+            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
         }
 
         assert_eq!(net.members(), net.actors());

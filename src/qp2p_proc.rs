@@ -33,7 +33,7 @@ struct SharedDSB {
 impl SharedDSB {
     fn new() -> Self {
         Self {
-            dsb: Arc::new(Mutex::new(DSB::new(Default::default()))),
+            dsb: Arc::new(Mutex::new(DSB::new())),
         }
     }
 

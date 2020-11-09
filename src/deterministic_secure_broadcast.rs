@@ -79,15 +79,14 @@ enum BFTOp<Op> {
 }
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
-    pub fn new(known_peers: BTreeSet<Actor>) -> Self {
+    pub fn new() -> Self {
         let keypair = Keypair::generate(&mut OsRng);
         let actor = Actor(keypair.public);
-
         Self {
             keypair,
             pending_proof: HashMap::new(),
             algo: A::new(actor),
-            peers: known_peers,
+            peers: Default::default(),
             delivered: VClock::new(),
             received: VClock::new(),
         }
@@ -114,6 +113,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     pub fn trust_peer(&mut self, peer: Actor) {
+        println!("[DSB] {:?} is trusting {:?}", self.actor(), peer);
         self.peers.insert(peer);
     }
 
@@ -127,7 +127,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         // once the list of proofs becomes large enough, collapse these proofs into the next snapshot.
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
-        println!("{} syncing", self.actor());
+        println!("[DSB] {} syncing", self.actor());
         self.peers.extend(state.peers);
         self.delivered.merge(state.delivered.clone());
         self.received.merge(state.delivered); // We advance received up to what we've delivered
@@ -205,7 +205,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 }
             }
             Payload::ProofOfAgreement { msg, .. } => {
-                println!("[DSB] proof of agreement");
+                println!("[DSB] proof of agreement: {:?}", msg);
                 // We may not have been in the subset of members to validate this clock
                 // so we may not have had the chance to increment received. We must bring
                 // received up to this msg's timestamp.
