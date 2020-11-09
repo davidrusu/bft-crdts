@@ -58,12 +58,13 @@ mod tests {
         for balance in balance_iter {
             let actor = net.initialize_proc();
             net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
-            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
             net.anti_entropy();
+            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
+            assert!(net.members_are_in_agreement());
+
             // TODO: add a test where the initiating actor is different from hte owner account
             net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
         }
-
         assert!(net.members_are_in_agreement());
     }
 
