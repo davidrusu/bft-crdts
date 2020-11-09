@@ -17,6 +17,23 @@ mod tests {
     use crdts::quickcheck::{quickcheck, TestResult};
     use crdts::Orswot;
 
+    fn bootstrap_net(net: &mut Net<BFTOrswot<u8>>, n_procs: u8) {
+        let genesis_actor = net.initialize_proc();
+        net.on_proc_mut(&genesis_actor, |p| p.trust_peer(genesis_actor))
+            .unwrap();
+
+        // 1 proc was taken by the genesis, so subtract 1
+        for _ in 0..(n_procs - 1) {
+            let actor = net.initialize_proc();
+            net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
+            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
+            net.anti_entropy();
+        }
+
+        assert_eq!(net.members(), net.actors());
+        assert!(net.members_are_in_agreement());
+    }
+
     quickcheck! {
         fn prop_adds_show_up_on_read(n_procs: u8, members: Vec<u8>) -> TestResult {
             if n_procs == 0 || n_procs > 7 || members.len() > 10 {
@@ -24,16 +41,7 @@ mod tests {
             }
 
             let mut net: Net<BFTOrswot<u8>> = Net::new();
-            for _ in 0..n_procs {
-                let actor = net.initialize_proc();
-
-                let packets_to_req_membership = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-                net.run_packets_to_completion(packets_to_req_membership);
-                net.anti_entropy();
-            }
-
-            assert_eq!(net.members(), net.actors());
-            assert!(net.members_are_in_agreement());
+            bootstrap_net(&mut net, n_procs);
 
             let actors_loop = net.actors().into_iter().collect::<Vec<_>>().into_iter().cycle();
             for (i, member) in actors_loop.zip(members.clone().into_iter()) {
@@ -60,17 +68,7 @@ mod tests {
             }
 
             let mut net: Net<BFTOrswot<u8>> = Net::new();
-            for _ in 0..n_procs {
-                let actor = net.initialize_proc();
-                net.run_packets_to_completion(
-                    net.on_proc(&actor, |p| p.request_membership()).unwrap(),
-                );
-                net.anti_entropy();
-            }
-
-            assert_eq!(net.members(), net.actors());
-            assert!(net.members_are_in_agreement());
-
+            bootstrap_net(&mut net, n_procs);
 
             // Model testing against the HashSet
             let mut model = HashSet::new();
