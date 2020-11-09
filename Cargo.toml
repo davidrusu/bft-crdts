@@ -13,7 +13,6 @@ path = "src/qp2p_proc.rs"
 crdts = "4.0.0"
 ed25519 = { version = "1.0.0", package = "ed25519-dalek", features = ["serde"] }
 rand = "0.7.3"
-sha2 = "0.8.1"
 serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"

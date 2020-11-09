@@ -44,33 +44,38 @@ mod tests {
     use super::*;
     use crdts::quickcheck::{quickcheck, TestResult};
 
+    fn bootstrap_network(net: &mut Net<Bank>, balances: Vec<Money>) {
+        let mut balance_iter = balances.into_iter();
+        let genesis_balance = balance_iter.next().unwrap();
+        let genesis_actor = net.initialize_proc();
+        net.on_proc_mut(&genesis_actor, |p| p.trust_peer(genesis_actor))
+            .unwrap();
+        net.run_packets_to_completion(
+            net.open_account(genesis_actor, genesis_actor, genesis_balance)
+                .unwrap(),
+        );
+
+        for balance in balance_iter {
+            let actor = net.initialize_proc();
+            net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
+            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
+            net.anti_entropy();
+            // TODO: add a test where the initiating actor is different from hte owner account
+            net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
+        }
+
+        assert!(net.members_are_in_agreement());
+    }
+
     quickcheck! {
         fn there_is_agreement_on_initial_balances(balances: Vec<Money>) -> TestResult {
-            if balances.len() > 7 {
+            if balances.is_empty() || balances.len() > 7 {
                 // for the sake of time/computation, it's unlikely that we will have novel interesting behaviour with more procs.
                 return TestResult::discard()
             }
 
             let mut net = Net::new();
-            for balance in balances.iter().cloned() {
-                let actor = net.initialize_proc();
-
-                let member_request_packets = net.on_proc(
-                    &actor,
-                    |p| p.request_membership()
-                ).unwrap();
-                net.run_packets_to_completion(member_request_packets);
-
-                assert!(net.members().contains(&actor)); // The process is now a member
-
-                net.anti_entropy(); // We onboard the new process by running a round of anti-entropy
-
-                // TODO: add a test where the initiating actor is different from the owner account
-                let new_bank_account_packets = net.open_account(actor, actor, balance).unwrap();
-                net.run_packets_to_completion(new_bank_account_packets);
-            }
-
-            assert!(net.members_are_in_agreement());
+            bootstrap_network(&mut net, balances.clone());
 
             // make sure that all balances in the network appear in the initial list of balances
             // and all balances in the initial list appear in the network (full actor <-> balance correspondance check)
@@ -99,15 +104,7 @@ mod tests {
             }
 
             let mut net = Net::new();
-            for balance in balances.iter().cloned() {
-                let actor = net.initialize_proc();
-
-                net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
-                net.anti_entropy();
-
-                // TODO: add a test where the initiating actor is different from hte owner account
-                net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
-            }
+            bootstrap_network(&mut net, balances.clone());
 
             let actors: Vec<Actor> = net.actors().into_iter().collect();
 
@@ -157,14 +154,7 @@ mod tests {
             }
 
             let mut net = Net::new();
-            for balance in balances.iter().cloned() {
-                let actor = net.initialize_proc();
-
-                net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
-                net.anti_entropy();
-                // TODO: add a test where the initiating actor is different from hte owner account
-                net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
-            }
+            bootstrap_network(&mut net, balances.clone());
 
             let actors: Vec<_> = net.actors().into_iter().collect();
             let a = actors[0];
@@ -234,27 +224,10 @@ mod tests {
     fn there_is_agreement_on_initial_balances_qc1() {
         // Quickcheck found some problems with an earlier version of the BFT onboarding logic.
         // This is a direct copy of the quickcheck tests, together with the failing test vector.
-        let mut net = Net::new();
-
         let balances = vec![0, 0];
-        for balance in balances.iter() {
-            let actor = net.initialize_proc();
 
-            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            net.anti_entropy();
-
-            // TODO: add a test where the initiating actor is different from hte owner account
-            let mut packets = net.open_account(actor, actor, *balance).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-        }
-
-        assert!(net.members_are_in_agreement());
+        let mut net = Net::new();
+        bootstrap_network(&mut net, balances.clone());
 
         // make sure that all balances in the network appear in the initial list of balances
         // and all balances in the initial list appear in the network (full actor <-> balance correspondance check)
@@ -276,28 +249,14 @@ mod tests {
             assert_eq!(remaining_balances.len(), 0);
         }
 
-        assert_eq!(net.n_packets, 15);
+        assert_eq!(net.n_packets, 13);
     }
 
     #[test]
     fn test_transfer_is_actually_moving_money_qc1() {
+        let balances = vec![0, 9];
         let mut net = Net::new();
-        for balance in &[0, 9] {
-            let actor = net.initialize_proc();
-
-            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            net.anti_entropy();
-
-            // TODO: add a test where the initiating actor is different from hte owner account
-            let mut packets = net.open_account(actor, actor, *balance).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-        }
+        bootstrap_network(&mut net, balances.clone());
 
         let initiator = net.find_actor_with_balance(9).unwrap();
         let from = initiator;
@@ -327,28 +286,14 @@ mod tests {
         assert_eq!(from_balance_abs_delta, amount);
         assert_eq!(from_balance_abs_delta, to_balance_abs_delta);
 
-        assert_eq!(net.n_packets, 21);
+        assert_eq!(net.n_packets, 19);
     }
 
     #[test]
     fn test_causal_dependancy() {
+        let balances = vec![1000, 1000, 1000, 1000];
         let mut net = Net::new();
-        for balance in &[1000, 1000, 1000, 1000] {
-            let actor = net.initialize_proc();
-
-            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            net.anti_entropy();
-
-            // TODO: add a test where the initiating actor is different from hte owner account
-            let mut packets = net.open_account(actor, actor, *balance).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-        }
+        bootstrap_network(&mut net, balances.clone());
 
         let actors: Vec<_> = net.actors().into_iter().collect();
         let a = actors[0];
@@ -389,30 +334,14 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
 
-        assert_eq!(net.n_packets, 81);
+        assert_eq!(net.n_packets, 83);
     }
 
     #[test]
     fn test_double_spend_qc2() {
+        let balances = vec![0, 0, 0];
         let mut net = Net::new();
-        for balance in &[0, 0, 0] {
-            let actor = net.initialize_proc();
-
-            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            net.anti_entropy();
-
-            // TODO: add a test where the initiating actor is different from the owner account
-            let mut packets = net.open_account(actor, actor, *balance).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            assert!(net.members_are_in_agreement());
-        }
+        bootstrap_network(&mut net, balances.clone());
 
         let actors: Vec<_> = net.actors().into_iter().collect();
         let a = actors[0];
@@ -447,7 +376,7 @@ mod tests {
             (b_delta == a_init_balance && c_delta == 0)
                 || (b_delta == 0 && c_delta == a_init_balance)
         );
-        assert_eq!(net.n_packets, 44);
+        assert_eq!(net.n_packets, 41);
     }
 
     #[test]
@@ -456,23 +385,9 @@ mod tests {
         // requests for validation evenly between procs, the network will not
         // execute any transaction.
 
+        let balances = vec![2, 3, 4, 1];
         let mut net = Net::new();
-        for balance in &[2, 3, 4, 1] {
-            let actor = net.initialize_proc();
-
-            let mut packets = net.on_proc(&actor, |p| p.request_membership()).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-
-            net.anti_entropy();
-
-            // TODO: add a test where the initiating actor is different from hte owner account
-            let mut packets = net.open_account(actor, actor, *balance).unwrap();
-            while let Some(packet) = packets.pop() {
-                packets.extend(net.deliver_packet(packet));
-            }
-        }
+        bootstrap_network(&mut net, balances.clone());
 
         let a = net.find_actor_with_balance(1).unwrap();
         let b = net.find_actor_with_balance(2).unwrap();
@@ -520,6 +435,6 @@ mod tests {
         assert_eq!(b_final_balance, 2);
         assert_eq!(c_final_balance, 3);
 
-        assert_eq!(net.n_packets, 60);
+        assert_eq!(net.n_packets, 62);
     }
 }
