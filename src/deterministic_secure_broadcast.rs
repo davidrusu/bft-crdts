@@ -192,9 +192,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.pending_proof[&msg].clone();
 
-                    // Add our selves to the broadcast targets since if this msg was a membership request, we
-                    // will not yet be in the peer set but we do still want to receive the proof of agreement
-                    // so that we will add our selves to the peerset.
+                    // Add ourselves to the broadcast recipients since we may have initiated this request
+                    // while we were not yet an accepted member of the network.
+                    // e.g. this happens if we request to join the network.
                     let recipients = &self.peers | &vec![self.actor()].into_iter().collect();
                     let packets =
                         self.broadcast(&Payload::ProofOfAgreement { msg, proof }, recipients);
@@ -301,7 +301,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             BFTOp::AlgoOp(op) => vec![
                 (
                     self.peers.contains(&from),
-                    "source is not a member of the network",
+                    "source is not a voting member of the network",
                 ),
                 (self.algo.validate(&from, &op), "failed algo validation"),
             ],
