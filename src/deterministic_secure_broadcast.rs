@@ -191,24 +191,14 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.pending_proof[&msg].clone();
-                    let add_self = match msg.op {
-                        BFTOp::MembershipNewPeer(id) => {
-                            if id == self.actor() {
-                                true
-                            } else {
-                                println!("[DSB/BFT] Found unexepected non-self peer {}", id);
-                                false
-                            }
-                        }
-                        _ => false,
-                    };
 
-                    let packets = self.broadcast(&Payload::ProofOfAgreement { msg, proof });
+                    // Add our selves to the broadcast targets since if this msg was a membership request, we
+                    // will not yet be in the peer set but we do still want to receive the proof of agreement
+                    // so that we will add our selves to the peerset.
+                    let recipients = &self.peers | &vec![self.actor()].into_iter().collect();
+                    let packets =
+                        self.broadcast(&Payload::ProofOfAgreement { msg, proof }, recipients);
 
-                    // We do this after broadcast, to avoid broadcasting to ourself.
-                    if add_self {
-                        self.peers.replace(self.actor());
-                    }
                     packets
                 } else {
                     vec![]
@@ -333,19 +323,18 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         };
 
         println!("[DSB] {} initiating bft for msg {:?}", self.actor(), msg);
-        self.broadcast(&Payload::RequestValidation { msg })
+        self.broadcast(&Payload::RequestValidation { msg }, self.peers.clone())
     }
 
     fn quorum(&self, n: usize) -> bool {
         n * 3 > self.peers.len() * 2
     }
 
-    fn broadcast(&self, payload: &Payload<A::Op>) -> Vec<Packet<A::Op>> {
-        println!("[DSB] broadcasting {}->{:?}", self.actor(), self.peers());
+    fn broadcast(&self, payload: &Payload<A::Op>, targets: BTreeSet<Actor>) -> Vec<Packet<A::Op>> {
+        println!("[DSB] broadcasting {}->{:?}", self.actor(), targets);
 
-        self.peers
-            .iter()
-            .cloned()
+        targets
+            .into_iter()
             .map(|dest_p| self.send(dest_p, payload.clone()))
             .collect()
     }
