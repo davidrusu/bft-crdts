@@ -33,6 +33,9 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
 
     // The set of members in this network.
     peers: BTreeSet<Actor>,
+
+    // Track number of invalid packets received from an actor
+    invalid_packets: BTreeMap<Actor, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +115,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.peers.clone()
     }
 
+    pub fn invalid_packets(&self) -> BTreeMap<Actor, u64> {
+        self.invalid_packets.clone().into()
+    }
+
     pub fn trust_peer(&mut self, peer: Actor) {
         println!("[DSB] {:?} is trusting {:?}", self.actor(), peer);
         self.peers.insert(peer);
@@ -162,6 +169,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         if self.validate_packet(&packet) {
             self.process_packet(packet)
         } else {
+            println!("[DSB/INVALID] packet failed validation: {:?}", packet);
+            let count = self.invalid_packets.entry(packet.source).or_default();
+            *count += 1;
             vec![]
         }
     }
