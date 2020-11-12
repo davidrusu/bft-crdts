@@ -274,34 +274,53 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
-                (from == msg.dot.actor, "source does not match the msg dot"),
-                (msg.dot == self.received.inc(from), "not the next msg"),
+                (
+                    from == msg.dot.actor,
+                    "source does not match the msg dot".to_string(),
+                ),
+                (
+                    msg.dot == self.received.inc(from),
+                    "not the next msg".to_string(),
+                ),
                 (
                     self.validate_bft_op(&from, &msg.op),
-                    "failed bft op validation",
+                    "failed bft op validation".to_string(),
                 ),
             ],
             Payload::SignedValidated { msg, sig } => vec![
-                (self.verify_sig(&from, &msg, sig), "failed sig verification"),
-                (self.actor() == msg.dot.actor, "validation not requested"),
+                (
+                    self.verify_sig(&from, &msg, sig),
+                    "failed sig verification".to_string(),
+                ),
+                (
+                    self.actor() == msg.dot.actor,
+                    "validation not requested".to_string(),
+                ),
             ],
             Payload::ProofOfAgreement { msg, proof } => vec![
                 (
                     self.delivered.inc(from) == msg.dot,
-                    "either already delivered or out of order msg",
+                    format!(
+                        "either already delivered or out of order msg: {:?} != {:?}",
+                        self.delivered.inc(from),
+                        msg.dot
+                    ),
                 ),
-                (self.quorum(proof.len()), "not enough signatures for quorum"),
+                (
+                    self.quorum(proof.len()),
+                    "not enough signatures for quorum".to_string(),
+                ),
                 (
                     proof
                         .iter()
                         .all(|(signatory, _sig)| self.peers.contains(&signatory)),
-                    "proof contains signature(s) from unknown peer(s)",
+                    "proof contains signature(s) from unknown peer(s)".to_string(),
                 ),
                 (
                     proof
                         .iter()
                         .all(|(signatory, sig)| self.verify_sig(signatory, &msg, &sig)),
-                    "proof contains invalid signature(s)",
+                    "proof contains invalid signature(s)".to_string(),
                 ),
             ],
         };
