@@ -67,6 +67,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_concurrent_op_and_member_change() {
+        let mut net = Net::new();
+        bootstrap_net(&mut net, 3);
+        let mut members = net.members().into_iter();
+        let (a, b, c) = (
+            members.next().unwrap(),
+            members.next().unwrap(),
+            members.next().unwrap(),
+        );
+
+        let value_to_add = 32;
+        let req_for_valid_packets = net
+            .on_proc(&a, |p| {
+                p.exec_algo_op(|orswot| Some(orswot.add(value_to_add)))
+            })
+            .unwrap();
+        let signed_validated_packets: Vec<_> = req_for_valid_packets
+            .into_iter()
+            .flat_map(|p| net.deliver_packet(p))
+            .collect();
+        let proofs_packets = signed_validated_packets
+            .into_iter()
+            .flat_map(|p| net.deliver_packet(p))
+            .collect();
+
+        // hold onto the proofs, don't deliver them till we've removed a few members
+
+        net.run_packets_to_completion(net.on_proc(&b, |p| p.kill_peer(b)).unwrap());
+        net.run_packets_to_completion(net.on_proc(&c, |p| p.kill_peer(c)).unwrap());
+        net.run_packets_to_completion(proofs_packets);
+
+        assert!(net.members_are_in_agreement());
+        assert_eq!(net.count_invalid_packets(), 0);
+        assert!(net
+            .on_proc(&a, |p| p.state().algo_state.contains(&value_to_add).val)
+            .unwrap());
+    }
+
     quickcheck! {
         fn prop_adds_show_up_on_read(n_procs: u8, members: Vec<u8>) -> TestResult {
             if n_procs == 0 || n_procs > 7 || members.len() > 10 {
