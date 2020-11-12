@@ -121,6 +121,14 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         }
     }
 
+    /// counts number of invalid packets received by any proc
+    pub fn count_invalid_packets(&self) -> u64 {
+        self.procs
+            .iter()
+            .map(|p| p.invalid_packets().values().sum::<u64>())
+            .sum()
+    }
+
     /// Convenience function to iteratively deliver all packets along with any packets
     /// that may result from delivering a packet.
     pub fn run_packets_to_completion(&mut self, mut packets: Vec<Packet<A::Op>>) {

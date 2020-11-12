@@ -61,11 +61,16 @@ mod tests {
             net.anti_entropy();
             net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
             assert!(net.members_are_in_agreement());
+            assert_eq!(net.count_invalid_packets(), 0);
 
             // TODO: add a test where the initiating actor is different from hte owner account
             net.run_packets_to_completion(net.open_account(actor, actor, balance).unwrap());
+            assert!(net.members_are_in_agreement());
+            assert_eq!(net.count_invalid_packets(), 0);
         }
+
         assert!(net.members_are_in_agreement());
+        assert_eq!(net.count_invalid_packets(), 0);
     }
 
     quickcheck! {
@@ -303,10 +308,8 @@ mod tests {
         let d = actors[3];
 
         // T0:  a -> b
-        let mut packets = net.transfer(a, a, b, 500).unwrap();
-        while let Some(packet) = packets.pop() {
-            packets.extend(net.deliver_packet(packet));
-        }
+        let packets = net.transfer(a, a, b, 500).unwrap();
+        net.run_packets_to_completion(packets);
         assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(500));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
@@ -314,10 +317,8 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(1000));
 
         // T1: a -> c
-        let mut packets = net.transfer(a, a, c, 500).unwrap();
-        while let Some(packet) = packets.pop() {
-            packets.extend(net.deliver_packet(packet));
-        }
+        let packets = net.transfer(a, a, c, 500).unwrap();
+        net.run_packets_to_completion(packets);
         assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(1500));
@@ -325,17 +326,15 @@ mod tests {
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(1000));
 
         // T2: b -> d
-        let mut packets = net.transfer(b, b, d, 1500).unwrap();
-        while let Some(packet) = packets.pop() {
-            packets.extend(net.deliver_packet(packet));
-        }
+        let packets = net.transfer(b, b, d, 1500).unwrap();
+        net.run_packets_to_completion(packets);
         assert!(net.members_are_in_agreement());
         assert_eq!(net.balance_from_pov_of_proc(&a, &a), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&b, &b), Some(0));
         assert_eq!(net.balance_from_pov_of_proc(&c, &c), Some(1500));
         assert_eq!(net.balance_from_pov_of_proc(&d, &d), Some(2500));
 
-        assert_eq!(net.n_packets, 83);
+        assert_eq!(net.n_packets, 87);
     }
 
     #[test]
@@ -436,6 +435,6 @@ mod tests {
         assert_eq!(b_final_balance, 2);
         assert_eq!(c_final_balance, 3);
 
-        assert_eq!(net.n_packets, 62);
+        assert_eq!(net.n_packets, 63);
     }
 }
