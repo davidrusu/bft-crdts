@@ -139,7 +139,21 @@ mod tests {
 
                         pending_packets.extend(net.deliver_packet(packet));
                     }
-                    _ => ()
+                    (5, actor_idx, target_actor_idx) if !members.is_empty() => {
+                        // kill peer
+                        let actor = members[actor_idx as usize % members.len()].clone();
+                        let target_actor = members[target_actor_idx as usize % members.len()].clone();
+                        for packet in net.on_proc(&actor, |p| p.kill_peer(target_actor)).unwrap() {
+                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                                let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
+                                packet_queues
+                                    .entry(queue)
+                                    .or_default()
+                                    .push(resp_packet)
+                            }
+                        }
+                    }
+                    _ => (),
                 }
             }
 

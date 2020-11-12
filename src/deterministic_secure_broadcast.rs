@@ -76,8 +76,8 @@ pub struct Msg<Op> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BFTOp<Op> {
-    // TODO: support peers leaving
     MembershipNewPeer(Actor),
+    MembershipKillPeer(Actor),
     AlgoOp(Op),
 }
 
@@ -127,6 +127,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     pub fn request_membership(&self) -> Vec<Packet<A::Op>> {
         self.exec_bft_op(BFTOp::MembershipNewPeer(self.actor()))
+    }
+
+    pub fn kill_peer(&self, actor: Actor) -> Vec<Packet<A::Op>> {
+        self.exec_bft_op(BFTOp::MembershipKillPeer(actor))
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
@@ -234,6 +238,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                         // do we want to do some sort of onboarding here?
                         // ie. maybe we can send this new peer our state
                     }
+                    BFTOp::MembershipKillPeer(id) => {
+                        self.peers.remove(&id);
+                    }
                     BFTOp::AlgoOp(op) => self.algo.apply(op),
                 };
 
@@ -309,6 +316,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
             BFTOp::MembershipNewPeer(_id) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
+            BFTOp::MembershipKillPeer(_id) => vec![], // We need to validate that this peer has indeed done something worth killing over
             BFTOp::AlgoOp(op) => vec![
                 (
                     self.peers.contains(&from),
