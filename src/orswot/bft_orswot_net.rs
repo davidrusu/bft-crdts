@@ -1,21 +1,18 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use serde::Serialize;
-
-use crate::net::Net;
-use crate::orswot::bft_orswot::BFTOrswot;
-
-impl<M: Clone + Eq + Hash + Debug + Serialize> Net<BFTOrswot<M>> {}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
-    use crate::traits::SecureBroadcastAlgorithm;
     use crdts::quickcheck::{quickcheck, TestResult};
-    use crdts::Orswot;
+    use crdts::{CmRDT, Orswot};
+
+    use crate::actor::Actor;
+    use crate::deterministic_secure_broadcast::Packet;
+    use crate::net::Net;
+    use crate::orswot::bft_orswot::BFTOrswot;
+    use crate::traits::SecureBroadcastAlgorithm;
 
     fn bootstrap_net(net: &mut Net<BFTOrswot<u8>>, n_procs: u8) {
         let genesis_actor = net.initialize_proc();
@@ -100,44 +97,93 @@ mod tests {
             TestResult::passed()
         }
 
-        fn prop_interpreter(instructions: Vec<(u8, u8, u8)>) -> bool{
+
+        fn prop_interpreter(instructions: Vec<(u8, u8, u8)>) -> TestResult {
+            if instructions.len() > 12 {
+                return TestResult::discard();
+            }
+
+            println!("------");
+            println!("instr: {:?}", instructions);
             let mut net: Net<BFTOrswot<u8>> = Net::new();
             let genesis_actor = net.initialize_proc();
             net.on_proc_mut(&genesis_actor, |p| p.trust_peer(genesis_actor)).unwrap();
 
-            let mut pending_packets = Vec::new();
-            for instr in instructions {
+            let mut packet_queues: BTreeMap<(Actor, Actor), Vec<Packet<_>>> = Default::default();
+            let mut model: Orswot<u8, Actor> = Default::default();
+
+            for mut instr in instructions {
                 let members: Vec<_> = net.members().into_iter().collect();
+                instr.0 = instr.0 % 6;
                 match instr {
-                    (0, _, _) => {
+                    (0, queue_idx, _)  if packet_queues.len() > 0 => {
+                        // deliver packet
+                        let queue = packet_queues.keys().nth(queue_idx as usize % packet_queues.len()).cloned().unwrap();
+                        let packets = packet_queues.entry(queue).or_default();
+                        if packets.len() > 0 {
+                            let packet = packets.remove(0);
+
+
+                            for resp_packet in net.deliver_packet(packet) {
+                                let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
+                                packet_queues
+                                    .entry(queue)
+                                    .or_default()
+                                    .push(resp_packet)
+                            }
+                        }
+                    }
+                    (1, _, _) if net.actors().len() < 7 => {
                         // add peer
                         let actor = net.initialize_proc();
                         net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
                         let genesis_state = net.proc_from_actor(&genesis_actor).unwrap().state();
                         net.on_proc_mut(&actor, |p| p.sync_from(genesis_state));
                     }
-                    (1, actor_idx, _) if !members.is_empty() => {
+                    (2, actor_idx, _) if !members.is_empty() => {
                         // request membership
                         let actor = members[actor_idx as usize % members.len()].clone();
-                        pending_packets.extend(net.on_proc(&actor, |p| p.request_membership()).unwrap())
+
+                        for packet in net.on_proc(&actor, |p| p.request_membership()).unwrap() {
+                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                                let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
+                                packet_queues
+                                    .entry(queue)
+                                    .or_default()
+                                    .push(resp_packet)
+                            }
+                        }
                     }
-                    (2, actor_idx, v) if !members.is_empty() => {
+                    (3, actor_idx, v) if !members.is_empty() => {
                         // add v
                         let actor = members[actor_idx as usize % members.len()].clone();
-                        pending_packets.extend(
-                            net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap());
+
+                        model.apply(model.add(v, model.read_ctx().derive_add_ctx(actor)));
+                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap() {
+                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                                let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
+                                packet_queues
+                                    .entry(queue)
+                                    .or_default()
+                                    .push(resp_packet)
+                            }
+                        }
                     }
-                    (3, actor_idx, v)  if !members.is_empty() => {
+                    (4, actor_idx, v)  if !members.is_empty() => {
                         // remove v
                         let actor = members[actor_idx as usize % members.len()].clone();
-                        pending_packets.extend(
-                            net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v))).unwrap());
-                    }
-                    (4, packet_idx, _) if !pending_packets.is_empty() => {
-                        // deliver packet
-                        let packet = pending_packets.remove(packet_idx as usize % pending_packets.len());
 
-                        pending_packets.extend(net.deliver_packet(packet));
+                        model.apply(model.rm(v, model.contains(&v).derive_rm_ctx()));
+
+                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v))).unwrap() {
+                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                                let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
+                                packet_queues
+                                    .entry(queue)
+                                    .or_default()
+                                    .push(resp_packet)
+                            }
+                        }
                     }
                     (5, actor_idx, target_actor_idx) if !members.is_empty() => {
                         // kill peer
@@ -157,9 +203,21 @@ mod tests {
                 }
             }
 
-            net.run_packets_to_completion(pending_packets);
+            println!("--- draining packet queues ---");
+            for (_queue, packets) in packet_queues {
+                net.run_packets_to_completion(packets);
+            }
+
             assert!(net.members_are_in_agreement());
-            true
+            assert_eq!(net.count_invalid_packets(), 0);
+            assert_eq!(
+                net.on_proc(&genesis_actor, |p| {
+                    p.state().algo_state
+                }),
+                Some(model)
+            );
+
+            TestResult::passed()
         }
     }
 }
