@@ -68,6 +68,15 @@ pub enum Payload<Op> {
     },
 }
 
+impl<Op> Payload<Op> {
+    pub fn is_proof_of_agreement(&self) -> bool {
+        match self {
+            Payload::ProofOfAgreement { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Msg<Op> {
     op: BFTOp<Op>,
@@ -251,7 +260,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
+    fn validate_packet(&mut self, packet: &Packet<A::Op>) -> bool {
         if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
             println!(
                 "[DSB/SIG] Msg failed signature verification {}->{}",
@@ -271,7 +280,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
+    fn validate_payload(&mut self, from: Actor, payload: &Payload<A::Op>) -> bool {
         let validation_tests = match payload {
             Payload::RequestValidation { msg } => vec![
                 (
@@ -332,7 +341,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .is_none()
     }
 
-    fn validate_bft_op(&self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
+    fn validate_bft_op(&mut self, from: &Actor, bft_op: &BFTOp<A::Op>) -> bool {
         let validation_tests = match bft_op {
             BFTOp::MembershipNewPeer(_id) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
             BFTOp::MembershipKillPeer(_id) => vec![], // We need to validate that this peer has indeed done something worth killing over

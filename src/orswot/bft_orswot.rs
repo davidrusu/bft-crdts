@@ -1,4 +1,4 @@
-use crdts::{orswot, CmRDT, CvRDT};
+use crdts::{orswot, CmRDT, CvRDT, VClock};
 
 use crate::actor::Actor;
 use crate::traits::SecureBroadcastAlgorithm;
@@ -11,6 +11,7 @@ use serde::Serialize;
 pub struct BFTOrswot<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> {
     actor: Actor,
     orswot: orswot::Orswot<M, Actor>,
+    received: VClock<Actor>,
 }
 
 impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M> {
@@ -47,6 +48,7 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
         BFTOrswot {
             actor,
             orswot: orswot::Orswot::new(),
+            received: VClock::new(),
         }
     }
 
@@ -55,43 +57,47 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
     }
 
     fn sync_from(&mut self, other: Self::ReplicatedState) {
+        self.received.merge(other.clock());
         self.orswot.merge(other);
     }
 
-    fn validate(&self, from: &Actor, op: &Self::Op) -> bool {
-        let validation_tests = match op {
-            orswot::Op::Add { dot, members: _ } => vec![
-                (
-                    &dot.actor == from,
-                    "Attempting to add with a dot different from the source proc",
-                ),
-                (
-                    dot == &self.orswot.clock().inc(*from),
-                    "Dot is not a direct successor",
-                ),
-            ],
-            orswot::Op::Rm { clock, members } => vec![
-                (
-                    members.len() == 1,
-                    "We only support removes of a single element",
-                ),
-                (
+    fn validate(&mut self, from: &Actor, op: &Self::Op) -> bool {
+        match op {
+            orswot::Op::Add { dot, members: _ } => {
+                if &dot.actor != from {
+                    println!(
+                        "[ORSWOT/INVALID] Attempting to add with a dot different from the source proc"
+                    );
+                    false
+                } else if dot != &self.received.inc(*from) {
+                    println!("[ORSWOT/INVALID] Dot is not a direct successor");
+                    false
+                } else {
+                    self.received.apply(dot.clone());
+                    true
+                }
+            }
+            orswot::Op::Rm { clock, members } => {
+                if members.len() != 1 {
+                    println!("[ORSWOT/INVALID] We only support removes of a single element");
+                    false
+                } else if !(clock <= &self.orswot.clock()) {
                     // NOTE: this check renders all the "deferred_remove" logic in the ORSWOT obsolete.
                     //       The deferred removes would buffer these out-of-order removes.
-                    clock <= &self.orswot.clock(),
-                    "This rm op is removing data we have not yet seen",
-                ),
-            ],
-        };
-
-        validation_tests
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[ORSWOT/VALIDATION] {} {:?}, {:?}", msg, op, self))
-            .is_none()
+                    println!("[ORSWOT/INVALID] This rm op is removing data we have not yet seen");
+                    false
+                } else {
+                    true
+                }
+            }
+        }
     }
 
     fn apply(&mut self, op: Self::Op) {
+        match &op {
+            orswot::Op::Add { dot, .. } => self.received.apply(dot.clone()),
+            _ => (),
+        }
         self.orswot.apply(op);
     }
 }

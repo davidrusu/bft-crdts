@@ -148,7 +148,7 @@ impl SecureBroadcastAlgorithm for Bank {
     }
 
     /// Protection against Byzantines
-    fn validate(&self, from: &Actor, op: &Op) -> bool {
+    fn validate(&mut self, from: &Actor, op: &Op) -> bool {
         let validation_tests = match op {
             Op::Transfer(transfer) => vec![
                 (

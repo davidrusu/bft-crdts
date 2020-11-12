@@ -18,7 +18,7 @@ pub trait SecureBroadcastAlgorithm: Clone + Debug + Eq {
     fn sync_from(&mut self, other: Self::ReplicatedState);
 
     /// Protection against Byzantines
-    fn validate(&self, from: &Actor, op: &Self::Op) -> bool;
+    fn validate(&mut self, from: &Actor, op: &Self::Op) -> bool;
 
     /// Executed once an op has been validated
     fn apply(&mut self, op: Self::Op);
