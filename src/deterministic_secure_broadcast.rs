@@ -40,9 +40,9 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
-    algo_state: A::ReplicatedState,
-    peers: BTreeSet<Actor>,
-    delivered: VClock<Actor>,
+    pub algo_state: A::ReplicatedState,
+    pub peers: BTreeSet<Actor>,
+    pub delivered: VClock<Actor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +92,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             peers: Default::default(),
             delivered: VClock::new(),
             received: VClock::new(),
+            invalid_packets: Default::default(),
         }
     }
 
@@ -301,7 +302,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         validation_tests
             .into_iter()
             .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[DSB/INVALID] {} {:?}, {:?}", msg, payload, self))
+            .map(|(_test, msg)| println!("[DSB/INVALID] {} {:?}", msg, payload))
             .is_none()
     }
 
