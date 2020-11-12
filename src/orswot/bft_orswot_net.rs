@@ -28,6 +28,45 @@ mod tests {
         assert!(net.members_are_in_agreement());
     }
 
+    #[test]
+    fn test_sequential_adds_run_cuncurrently() {
+        let mut net = Net::new();
+        bootstrap_net(&mut net, 1);
+        let actor = net.members().into_iter().nth(0).unwrap();
+
+        // Initiate the signing round DSB but don't deliver signatures
+        let pending_packets = net
+            .on_proc(&actor, |proc| {
+                proc.exec_algo_op(|orswot| Some(orswot.add(0)))
+            })
+            .unwrap()
+            .into_iter()
+            .flat_map(|p| net.deliver_packet(p))
+            .collect::<Vec<_>>();
+
+        // Initiate the signing round again but for a different op (adding 1 instead of 0)
+        let invalid_pending_packets = net
+            .on_proc(&actor, |proc| {
+                proc.exec_algo_op(|orswot| Some(orswot.add(1)))
+            })
+            .unwrap()
+            .into_iter()
+            .flat_map(|p| net.deliver_packet(p))
+            .collect::<Vec<_>>();
+
+        assert_eq!(net.count_invalid_packets(), 1);
+        assert_eq!(invalid_pending_packets.len(), 0);
+
+        net.run_packets_to_completion(pending_packets);
+
+        assert!(net.members_are_in_agreement());
+
+        assert_eq!(
+            net.on_proc(&actor, |p| p.state().algo_state.read().val),
+            Some(vec![0u8].into_iter().collect())
+        );
+    }
+
     quickcheck! {
         fn prop_adds_show_up_on_read(n_procs: u8, members: Vec<u8>) -> TestResult {
             if n_procs == 0 || n_procs > 7 || members.len() > 10 {
