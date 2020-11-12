@@ -211,7 +211,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 let num_signatures = self.pending_proof[&msg].len();
 
-                if self.quorum(num_signatures) {
+                assert!(num_signatures > 0);
+
+                // we don't want to re-broadcast a proof if we've already reached quorum
+                // hence we check that (num_sigs - 1) was not quorum
+                if self.quorum(num_signatures) && !self.quorum(num_signatures - 1) {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.pending_proof[&msg].clone();
