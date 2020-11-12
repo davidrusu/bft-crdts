@@ -147,6 +147,7 @@ mod tests {
 
             let mut packet_queues: BTreeMap<(Actor, Actor), Vec<Packet<_>>> = Default::default();
             let mut model: Orswot<u8, Actor> = Default::default();
+            let mut blocked: HashSet<Actor> = Default::default();
 
             for mut instr in instructions {
                 let members: Vec<_> = net.members().into_iter().collect();
@@ -159,6 +160,10 @@ mod tests {
                         if packets.len() > 0 {
                             let packet = packets.remove(0);
 
+                            if packet.payload.is_proof_of_agreement() {
+                                // we are completing the transaction, the source is no longer blocked
+                                assert!(blocked.remove(&packet.source));
+                            }
 
                             for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
@@ -179,6 +184,8 @@ mod tests {
                     (2, actor_idx, _) if !members.is_empty() => {
                         // request membership
                         let actor = members[actor_idx as usize % members.len()].clone();
+                        if blocked.contains(&actor) {continue};
+                        blocked.insert(actor.clone());
 
                         for packet in net.on_proc(&actor, |p| p.request_membership()).unwrap() {
                             for resp_packet in net.deliver_packet_shortcircuit(packet) {
@@ -193,6 +200,8 @@ mod tests {
                     (3, actor_idx, v) if !members.is_empty() => {
                         // add v
                         let actor = members[actor_idx as usize % members.len()].clone();
+                        if blocked.contains(&actor) {continue};
+                        blocked.insert(actor.clone());
 
                         model.apply(model.add(v, model.read_ctx().derive_add_ctx(actor)));
                         for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap() {
@@ -208,6 +217,8 @@ mod tests {
                     (4, actor_idx, v)  if !members.is_empty() => {
                         // remove v
                         let actor = members[actor_idx as usize % members.len()].clone();
+                        if blocked.contains(&actor) {continue};
+                        blocked.insert(actor.clone());
 
                         model.apply(model.rm(v, model.contains(&v).derive_rm_ctx()));
 
@@ -224,6 +235,8 @@ mod tests {
                     (5, actor_idx, target_actor_idx) if !members.is_empty() => {
                         // kill peer
                         let actor = members[actor_idx as usize % members.len()].clone();
+                        if blocked.contains(&actor) {continue};
+                        blocked.insert(actor.clone());
                         let target_actor = members[target_actor_idx as usize % members.len()].clone();
                         for packet in net.on_proc(&actor, |p| p.kill_peer(target_actor)).unwrap() {
                             for resp_packet in net.deliver_packet_shortcircuit(packet) {
