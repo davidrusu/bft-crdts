@@ -1,4 +1,4 @@
-use crdts::{orswot, CmRDT, CvRDT, VClock};
+use crdts::{orswot, CmRDT, CvRDT};
 
 use crate::actor::Actor;
 use crate::traits::SecureBroadcastAlgorithm;
@@ -11,7 +11,6 @@ use serde::Serialize;
 pub struct BFTOrswot<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> {
     actor: Actor,
     orswot: orswot::Orswot<M, Actor>,
-    received: VClock<Actor>,
 }
 
 impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M> {
@@ -48,7 +47,6 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
         BFTOrswot {
             actor,
             orswot: orswot::Orswot::new(),
-            received: VClock::new(),
         }
     }
 
@@ -57,11 +55,10 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
     }
 
     fn sync_from(&mut self, other: Self::ReplicatedState) {
-        self.received.merge(other.clock());
         self.orswot.merge(other);
     }
 
-    fn validate(&mut self, from: &Actor, op: &Self::Op) -> bool {
+    fn validate(&self, from: &Actor, op: &Self::Op) -> bool {
         match op {
             orswot::Op::Add { dot, members: _ } => {
                 if &dot.actor != from {
@@ -69,11 +66,7 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
                         "[ORSWOT/INVALID] Attempting to add with a dot different from the source proc"
                     );
                     false
-                } else if dot != &self.received.inc(*from) {
-                    println!("[ORSWOT/INVALID] Dot is not a direct successor");
-                    false
                 } else {
-                    self.received.apply(dot.clone());
                     true
                 }
             }
@@ -94,10 +87,6 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
     }
 
     fn apply(&mut self, op: Self::Op) {
-        match &op {
-            orswot::Op::Add { dot, .. } => self.received.apply(dot.clone()),
-            _ => (),
-        }
         self.orswot.apply(op);
     }
 }
