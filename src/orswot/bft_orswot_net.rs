@@ -79,22 +79,29 @@ mod tests {
         );
 
         let value_to_add = 32;
+
+        // initiating process 'a' broadcasts requests for validation
         let req_for_valid_packets = net
             .on_proc(&a, |p| {
                 p.exec_algo_op(|orswot| Some(orswot.add(value_to_add)))
             })
             .unwrap();
+
+        // we deliver these packets to destinations
+        // and collect responses with signatures
         let signed_validated_packets: Vec<_> = req_for_valid_packets
             .into_iter()
             .flat_map(|p| net.deliver_packet(p))
             .collect();
+
+        // signatures are delivered back to 'a' who then procedes to
+        // broadcast the proof of agreement back to the network.
         let proofs_packets = signed_validated_packets
             .into_iter()
             .flat_map(|p| net.deliver_packet(p))
             .collect();
 
         // hold onto the proofs, don't deliver them till we've removed a few members
-
         net.run_packets_to_completion(net.on_proc(&b, |p| p.kill_peer(b)).unwrap());
         net.run_packets_to_completion(net.on_proc(&c, |p| p.kill_peer(c)).unwrap());
         net.run_packets_to_completion(proofs_packets);
@@ -227,7 +234,7 @@ mod tests {
                         blocked.insert(actor.clone());
 
                         for packet in net.on_proc(&actor, |p| p.request_membership()).unwrap() {
-                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                            for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
                                     .entry(queue)
@@ -244,7 +251,7 @@ mod tests {
 
                         model.apply(model.add(v, model.read_ctx().derive_add_ctx(actor)));
                         for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap() {
-                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                            for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
                                     .entry(queue)
@@ -262,7 +269,7 @@ mod tests {
                         model.apply(model.rm(v, model.contains(&v).derive_rm_ctx()));
 
                         for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v))).unwrap() {
-                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                            for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
                                     .entry(queue)
@@ -278,7 +285,7 @@ mod tests {
                         blocked.insert(actor.clone());
                         let target_actor = members[target_actor_idx as usize % members.len()].clone();
                         for packet in net.on_proc(&actor, |p| p.kill_peer(target_actor)).unwrap() {
-                            for resp_packet in net.deliver_packet_shortcircuit(packet) {
+                            for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
                                     .entry(queue)

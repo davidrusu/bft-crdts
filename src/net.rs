@@ -96,20 +96,6 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         }
     }
 
-    pub fn deliver_packet_shortcircuit(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
-        let source = packet.source.clone();
-        self.deliver_packet(packet)
-            .into_iter()
-            .flat_map(|resp_packet| {
-                if resp_packet.dest == source {
-                    self.deliver_packet(resp_packet)
-                } else {
-                    vec![resp_packet]
-                }
-            })
-            .collect()
-    }
-
     /// Delivers a given packet to it's target recipiant.
     /// The recipiant, upon processing this packet, may produce it's own packets.
     /// This next set of packets are returned to the caller.
