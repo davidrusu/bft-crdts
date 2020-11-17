@@ -59,36 +59,31 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
     }
 
     fn validate(&self, from: &Actor, op: &Self::Op) -> bool {
-        let validation_tests = match op {
-            orswot::Op::Add { dot, members: _ } => vec![
-                (
-                    &dot.actor == from,
-                    "Attempting to add with a dot different from the source proc",
-                ),
-                (
-                    dot == &self.orswot.clock().inc(*from),
-                    "Dot is not a direct successor",
-                ),
-            ],
-            orswot::Op::Rm { clock, members } => vec![
-                (
-                    members.len() == 1,
-                    "We only support removes of a single element",
-                ),
-                (
+        match op {
+            orswot::Op::Add { dot, members: _ } => {
+                if &dot.actor != from {
+                    println!(
+                        "[ORSWOT/INVALID] Attempting to add with a dot different from the source proc"
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            orswot::Op::Rm { clock, members } => {
+                if members.len() != 1 {
+                    println!("[ORSWOT/INVALID] We only support removes of a single element");
+                    false
+                } else if !(clock <= &self.orswot.clock()) {
                     // NOTE: this check renders all the "deferred_remove" logic in the ORSWOT obsolete.
                     //       The deferred removes would buffer these out-of-order removes.
-                    clock <= &self.orswot.clock(),
-                    "This rm op is removing data we have not yet seen",
-                ),
-            ],
-        };
-
-        validation_tests
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[ORSWOT/VALIDATION] {} {:?}, {:?}", msg, op, self))
-            .is_none()
+                    println!("[ORSWOT/INVALID] This rm op is removing data we have not yet seen");
+                    false
+                } else {
+                    true
+                }
+            }
+        }
     }
 
     fn apply(&mut self, op: Self::Op) {
