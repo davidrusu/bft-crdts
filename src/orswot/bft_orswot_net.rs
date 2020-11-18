@@ -54,16 +54,31 @@ mod tests {
             .flat_map(|p| net.deliver_packet(p))
             .collect::<Vec<_>>();
 
-        assert_eq!(net.count_invalid_packets(), 1);
-        assert_eq!(invalid_pending_packets.len(), 0);
+        assert_eq!(net.count_invalid_packets(), 0); // At the DSB level, these messages appear fine
 
+        // running through the first batch of pending messages completes as expected
         net.run_packets_to_completion(pending_packets);
 
         assert!(net.members_are_in_agreement());
-
         assert_eq!(
             net.on_proc(&actor, |p| p.state().algo_state.read().val),
             Some(vec![0u8].into_iter().collect())
+        );
+        assert_eq!(
+            net.on_proc(&actor, |p| p.read_state(|orswot| orswot.invalid_packets)),
+            Some(0)
+        );
+
+        // The second batch is detected as faulty and dropped.
+        net.run_packets_to_completion(invalid_pending_packets);
+        assert!(net.members_are_in_agreement());
+        assert_eq!(
+            net.on_proc(&actor, |p| p.state().algo_state.read().val),
+            Some(vec![0u8].into_iter().collect())
+        );
+        assert_eq!(
+            net.on_proc(&actor, |p| p.read_state(|orswot| orswot.invalid_packets)),
+            Some(1) // ensure we have detected an invalid packet
         );
     }
 

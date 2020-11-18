@@ -99,8 +99,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             pending_proof: HashMap::new(),
             algo: A::new(actor),
             peers: Default::default(),
-            delivered: VClock::new(),
             received: VClock::new(),
+            delivered: VClock::new(),
             invalid_packets: Default::default(),
         }
     }
@@ -254,7 +254,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     BFTOp::MembershipKillPeer(id) => {
                         self.peers.remove(&id);
                     }
-                    BFTOp::AlgoOp(op) => self.algo.apply(op),
+                    BFTOp::AlgoOp(op) => self.algo.deliver(packet.source, op),
                 };
 
                 // TODO: Once we relax our network assumptions, we must put in an ack
@@ -349,13 +349,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         let validation_tests = match bft_op {
             BFTOp::MembershipNewPeer(_id) => vec![], // In a proper deployment, add some validations to resist Sybil attacks
             BFTOp::MembershipKillPeer(_id) => vec![], // We need to validate that this peer has indeed done something worth killing over
-            BFTOp::AlgoOp(op) => vec![
-                (
-                    self.peers.contains(&from),
-                    "source is not a voting member of the network",
-                ),
-                (self.algo.validate(&from, &op), "failed algo validation"),
-            ],
+            BFTOp::AlgoOp(op) => vec![(
+                self.peers.contains(&from),
+                "source is not a voting member of the network",
+            )],
         };
 
         validation_tests

@@ -1,64 +1,34 @@
-use crdts::{orswot, CmRDT, CvRDT};
+use std::fmt::Debug;
+use std::hash::Hash;
+
+use crdts::{orswot, CmRDT, CvRDT, Dot, VClock};
 
 use crate::actor::Actor;
 use crate::traits::SecureBroadcastAlgorithm;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-// Todo: add closure for app to perform biz logic validation.
-
-#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
-pub struct BFTOrswot<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> {
-    actor: Actor,
-    orswot: orswot::Orswot<M, Actor>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BFTOp<M: Clone + Eq + Hash + Debug + Serialize> {
+    pub op: orswot::Op<M, Actor>,
+    pub seq_num: u64,
 }
 
-impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> BFTOrswot<M> {
-    pub fn add(&self, member: M) -> orswot::Op<M, Actor> {
-        let add_ctx = self.orswot.read_ctx().derive_add_ctx(self.actor);
-        self.orswot.add(member, add_ctx)
-    }
-
-    pub fn rm(&self, member: M) -> Option<orswot::Op<M, Actor>> {
-        let contains_ctx = self.orswot.contains(&member);
-        if contains_ctx.val {
-            Some(self.orswot.rm(member, contains_ctx.derive_rm_ctx()))
-        } else {
-            None
-        }
-    }
-
-    pub fn actor(&self) -> &Actor {
-        &self.actor
-    }
-
-    pub fn orswot(&self) -> &orswot::Orswot<M, Actor> {
-        &self.orswot
-    }
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct BFTOrswot<M: Clone + Eq + Hash + Debug + Serialize> {
+    pub actor: Actor,
+    pub orswot: orswot::Orswot<M, Actor>,
+    pub seq: VClock<Actor>,
+    pub invalid_packets: u64,
 }
 
-impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadcastAlgorithm
-    for BFTOrswot<M>
-{
-    type Op = orswot::Op<M, Actor>;
-    type ReplicatedState = orswot::Orswot<M, Actor>;
-
-    fn new(actor: Actor) -> Self {
-        BFTOrswot {
-            actor,
-            orswot: orswot::Orswot::new(),
+impl<M: Clone + Eq + Hash + Debug + Serialize> BFTOrswot<M> {
+    fn validate(&self, from: &Actor, bft_op: &BFTOp<M>) -> bool {
+        let BFTOp { op, seq_num } = bft_op;
+        if *seq_num != self.seq.get(from) + 1 {
+            println!("[ORSWOT/INVALID] op seq num is not a direct successor of the previous op from this source");
+            return false;
         }
-    }
-
-    fn state(&self) -> Self::ReplicatedState {
-        self.orswot.clone()
-    }
-
-    fn sync_from(&mut self, other: Self::ReplicatedState) {
-        self.orswot.merge(other);
-    }
-
-    fn validate(&self, from: &Actor, op: &Self::Op) -> bool {
         match op {
             orswot::Op::Add { dot, members: _ } => {
                 if &dot.actor != from {
@@ -86,7 +56,70 @@ impl<M: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> SecureBroadc
         }
     }
 
-    fn apply(&mut self, op: Self::Op) {
-        self.orswot.apply(op);
+    pub fn add(&self, member: M) -> BFTOp<M> {
+        let add_ctx = self.orswot.read_ctx().derive_add_ctx(self.actor);
+        BFTOp {
+            op: self.orswot.add(member, add_ctx),
+            seq_num: self.seq.get(&self.actor) + 1,
+        }
+    }
+
+    pub fn rm(&self, member: M) -> Option<BFTOp<M>> {
+        let contains_ctx = self.orswot.contains(&member);
+        if contains_ctx.val {
+            Some(BFTOp {
+                op: self.orswot.rm(member, contains_ctx.derive_rm_ctx()),
+                seq_num: self.seq.get(&self.actor) + 1,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    pub fn orswot(&self) -> &orswot::Orswot<M, Actor> {
+        &self.orswot
+    }
+}
+
+impl<M: Clone + Eq + Hash + Debug + Serialize> SecureBroadcastAlgorithm for BFTOrswot<M> {
+    type Op = BFTOp<M>;
+    type ReplicatedState = orswot::Orswot<M, Actor>;
+
+    fn new(actor: Actor) -> Self {
+        BFTOrswot {
+            actor,
+            orswot: orswot::Orswot::new(),
+            seq: VClock::new(),
+            invalid_packets: 0,
+        }
+    }
+
+    fn state(&self) -> Self::ReplicatedState {
+        self.orswot.clone()
+    }
+
+    fn sync_from(&mut self, other: Self::ReplicatedState) {
+        self.orswot.merge(other);
+    }
+
+    fn deliver(&mut self, from: Actor, bft_op: Self::Op) {
+        if self.validate(&from, &bft_op) {
+            let BFTOp { op, seq_num } = bft_op;
+            self.seq.apply(Dot {
+                actor: from,
+                counter: seq_num,
+            });
+            self.orswot.apply(op);
+        } else {
+            self.invalid_packets += 1;
+            println!(
+                "[BFT_ORSWOT] dropping invalid op from source: {:?} op: {:?}",
+                from, bft_op
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use crdts::{CmRDT, Dot, VClock};
 use serde::Serialize;
 
 use crate::actor::Actor;
@@ -21,7 +22,7 @@ pub struct Transfer {
     from: Actor,
     to: Actor,
     amount: Money,
-
+    seq_num: u64,
     /// set of transactions that need to be applied before this transfer can be validated
     /// ie. a proof of funds
     deps: BTreeSet<Transfer>,
@@ -32,7 +33,8 @@ pub struct Bank {
     id: Actor,
     // The set of dependencies of the next outgoing transfer
     deps: BTreeSet<Transfer>,
-
+    rec: VClock<Actor>,
+    seq: VClock<Actor>,
     // The state that is replicated and managed by the network
     replicated: BankState,
 }
@@ -47,6 +49,56 @@ pub struct BankState {
 }
 
 impl Bank {
+    /// Protection against Byzantines
+    fn validate(&self, from: &Actor, op: &Op) -> bool {
+        let validation_tests = match op {
+            Op::Transfer(transfer) => vec![
+                (
+                    from == &transfer.from,
+                    "Sender initiated transfer on behalf of other proc",
+                ),
+                (transfer.seq_num == self.seq.get(&from) + 1,
+                 "Transfer seq_num is not the direct successor of last transfer from the source accoutn",
+                ),
+                (
+                    self.replicated
+                        .initial_balances
+                        .contains_key(&transfer.from),
+                    "From account does not exist",
+                ),
+                (
+                    self.balance(from) >= transfer.amount,
+                    "Sender has insufficient funds",
+                ),
+                (
+                    transfer.deps.is_subset(&self.history(from)),
+                    "Missing dependent ops",
+                ),
+                // additional validation (not present in AT2 paper)
+                (
+                    self.replicated.initial_balances.contains_key(&transfer.to),
+                    "To account does not exist",
+                ),
+            ],
+            Op::OpenAccount { owner, balance: _ } => vec![
+                (
+                    from == owner,
+                    "Initiator is not the owner of the new account",
+                ),
+                (
+                    !self.replicated.initial_balances.contains_key(owner),
+                    "Owner already has an account",
+                ),
+            ],
+        };
+
+        validation_tests
+            .into_iter()
+            .find(|(is_valid, _msg)| !is_valid)
+            .map(|(_test, msg)| println!("[BANK/VALIDATION] {} {:?}, {:?}", msg, op, self))
+            .is_none()
+    }
+
     pub fn open_account(&self, owner: Actor, balance: Money) -> Op {
         Op::OpenAccount { owner, balance }
     }
@@ -103,10 +155,12 @@ impl Bank {
             None
         } else {
             let deps = self.deps.clone();
+            let seq_num = self.seq.inc(self.id).counter;
             Some(Op::Transfer(Transfer {
                 from,
                 to,
                 amount,
+                seq_num,
                 deps,
             }))
         }
@@ -125,6 +179,8 @@ impl SecureBroadcastAlgorithm for Bank {
                 initial_balances: Default::default(),
                 hist: Default::default(),
             },
+            rec: VClock::new(),
+            seq: VClock::new(),
         }
     }
 
@@ -147,90 +203,55 @@ impl SecureBroadcastAlgorithm for Bank {
         }
     }
 
-    /// Protection against Byzantines
-    fn validate(&self, from: &Actor, op: &Op) -> bool {
-        let validation_tests = match op {
-            Op::Transfer(transfer) => vec![
-                (
-                    from == &transfer.from,
-                    "Sender initiated transfer on behalf of other proc",
-                ),
-                (
-                    self.replicated
-                        .initial_balances
-                        .contains_key(&transfer.from),
-                    "From account does not exist",
-                ),
-                (
-                    self.replicated.initial_balances.contains_key(&transfer.to),
-                    "To account does not exist",
-                ),
-                (
-                    self.balance(from) >= transfer.amount,
-                    "Sender has insufficient funds",
-                ),
-                (
-                    transfer.deps.is_subset(&self.history(from)),
-                    "Missing dependent ops",
-                ),
-            ],
-            Op::OpenAccount { owner, balance: _ } => vec![
-                (
-                    from == owner,
-                    "Initiator is not the owner of the new account",
-                ),
-                (
-                    !self.replicated.initial_balances.contains_key(owner),
-                    "Owner already has an account",
-                ),
-            ],
-        };
-
-        validation_tests
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[BANK/VALIDATION] {} {:?}, {:?}", msg, op, self))
-            .is_none()
-    }
-
     /// Executed once an op has been validated
-    fn apply(&mut self, op: Op) {
-        match op {
-            Op::Transfer(transfer) => {
-                // Update the history for the outgoing account
-                self.replicated
-                    .hist
-                    .entry(transfer.from)
-                    .or_default()
-                    .insert(transfer.clone());
+    fn deliver(&mut self, from: Actor, op: Op) {
+        // In the paper, we would increment rec[from] because we buffer transfers until
+        // they become valid, but in our implementation we do not buffer, and as such
+        // the seq[from] clock and the rec[from] clock would be identical.
 
-                // Update the history for the incoming account
-                self.replicated
-                    .hist
-                    .entry(transfer.to)
-                    .or_default()
-                    .insert(transfer.clone());
+        if self.validate(&from, &op) {
+            match op {
+                Op::Transfer(transfer) => {
+                    // Update the history for the outgoing account
+                    self.replicated
+                        .hist
+                        .entry(transfer.from)
+                        .or_default()
+                        .insert(transfer.clone());
 
-                if transfer.to == self.id {
-                    self.deps.insert(transfer.clone());
-                }
+                    // Update the history for the incoming account
+                    self.replicated
+                        .hist
+                        .entry(transfer.to)
+                        .or_default()
+                        .insert(transfer.clone());
 
-                if transfer.from == self.id {
-                    // In the paper, deps are cleared after the broadcast completes in
-                    // self.transfer.
-                    // Here we break up the initiation of the transfer from the completion.
-                    // We move the clearing of the deps here since this is where we now know
-                    // the transfer was successfully validated and applied by the network.
-                    for prior_transfer in transfer.deps.iter() {
-                        // for each dependency listed in the transfer
-                        // we remove it from the set of dependencies for a transfer
-                        self.deps.remove(prior_transfer);
+                    self.seq.apply(Dot {
+                        actor: from,
+                        counter: transfer.seq_num,
+                    });
+
+                    if transfer.to == self.id {
+                        self.deps.insert(transfer.clone());
+                    }
+
+                    if transfer.from == self.id {
+                        // In the paper, deps are cleared after the broadcast completes in
+                        // self.transfer.
+                        // Here we break up the initiation of the transfer from the completion.
+                        // We move the clearing of the deps here since this is where we now know
+                        // the transfer was successfully validated and applied by the network.
+                        for prior_transfer in transfer.deps.iter() {
+                            // for each dependency listed in the transfer
+                            // we remove it from the set of dependencies for a transfer
+                            self.deps.remove(prior_transfer);
+                        }
                     }
                 }
-            }
-            Op::OpenAccount { owner, balance } => {
-                println!("[BANK] opening new account for {} with ${}", owner, balance);
-                self.replicated.initial_balances.insert(owner, balance);
+                Op::OpenAccount { owner, balance } => {
+                    println!("[BANK] opening new account for {} with ${}", owner, balance);
+                    self.replicated.initial_balances.insert(owner, balance);
+                }
             }
         }
     }
