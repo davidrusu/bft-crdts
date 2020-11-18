@@ -296,6 +296,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     "not the next msg".to_string(),
                 ),
                 (
+                    msg.dot == self.delivered.inc(from),
+                    "source already has a pending operation, we must wait for that one to complete."
+                        .to_string(),
+                ),
+                (
                     self.validate_bft_op(&from, &msg.op),
                     "failed bft op validation".to_string(),
                 ),
