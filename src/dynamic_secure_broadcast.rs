@@ -24,25 +24,6 @@ impl Default for Proc {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Error {
-    ReconfigInProgress {
-        generation: u64,
-        pending_generation: u64,
-    },
-    MembersAtCapacity {
-        members: BTreeSet<Actor>,
-    },
-    JoinRequestForExistingMember {
-        requester: Actor,
-        members: BTreeSet<Actor>,
-    },
-    LeaveRequestForNonMember {
-        requester: Actor,
-        members: BTreeSet<Actor>,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Reconfig {
     Join(Actor),
@@ -68,6 +49,25 @@ struct Packet {
     vote: Vote,
     source: Actor,
     dest: Actor,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Error {
+    ReconfigInProgress {
+        generation: u64,
+        pending_generation: u64,
+    },
+    MembersAtCapacity {
+        members: BTreeSet<Actor>,
+    },
+    JoinRequestForExistingMember {
+        requester: Actor,
+        members: BTreeSet<Actor>,
+    },
+    LeaveRequestForNonMember {
+        requester: Actor,
+        members: BTreeSet<Actor>,
+    },
 }
 
 impl Proc {
