@@ -68,9 +68,43 @@ enum Error {
         requester: Actor,
         members: BTreeSet<Actor>,
     },
+    VoteFromPreviousGeneration {
+        packet_generation: u64,
+        generation: u64,
+    },
 }
 
 impl Proc {
+    pub fn trust(&mut self, actor: Actor) {
+        self.members.insert(actor);
+    }
+
+    pub fn reconfig(&self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
+        self.ensure_no_reconfig_in_progress()?;
+        self.validate_reconfig(&reconfig)?;
+
+        let vote = Vote {
+            voter: self.id,
+            ballot: Ballot::Initiate(reconfig),
+            generation: self.generation + 1,
+        };
+
+        Ok(self.broadcast(vote))
+    }
+
+    pub fn handle_packet(&self, packet: Packet) -> Result<Vec<Packet>, Error> {
+        let Packet { vote, source, dest } = packet;
+
+        if self.generation >= vote.generation {
+            Err(Error::VoteFromPreviousGeneration {
+                packet_generation: vote.generation,
+                generation: self.generation,
+            })
+        } else {
+            Ok(vec![])
+        }
+    }
+
     fn ensure_no_reconfig_in_progress(&self) -> Result<(), Error> {
         if self.generation != self.pending_generation {
             Err(Error::ReconfigInProgress {
@@ -121,19 +155,6 @@ impl Proc {
                 dest: member,
             })
             .collect()
-    }
-
-    fn reconfig(&self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
-        self.ensure_no_reconfig_in_progress()?;
-        self.validate_reconfig(&reconfig)?;
-
-        let vote = Vote {
-            voter: self.id,
-            ballot: Ballot::Initiate(reconfig),
-            generation: self.generation + 1,
-        };
-
-        Ok(self.broadcast(vote))
     }
 }
 
@@ -209,6 +230,25 @@ mod tests {
             Err(Error::LeaveRequestForNonMember {
                 requester: leaving_actor,
                 members: proc.members.clone(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_handle_packet_rejects_packet_from_previous_generation() {
+        let mut proc = Proc::default();
+        proc.trust(proc.id); // trust self
+
+        let mut packets = proc.reconfig(Reconfig::Join(Actor::generate().0)).unwrap();
+        assert_eq!(packets.len(), 1);
+
+        proc.generation += 1; // move to the next generation
+
+        assert_eq!(
+            proc.handle_packet(packets.pop().unwrap()),
+            Err(Error::VoteFromPreviousGeneration {
+                packet_generation: 1,
+                generation: 1,
             })
         );
     }
