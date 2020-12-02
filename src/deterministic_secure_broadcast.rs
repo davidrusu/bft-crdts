@@ -5,10 +5,7 @@ use crate::actor::{Actor, Sig};
 use crate::traits::SecureBroadcastAlgorithm;
 
 use crdts::{CmRDT, CvRDT, Dot, VClock};
-use ed25519::Keypair;
-use ed25519::Signer;
-use ed25519::Verifier;
-use rand::rngs::OsRng;
+use ed25519::{Keypair, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -92,8 +89,7 @@ enum BFTOp<Op> {
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     pub fn new() -> Self {
-        let keypair = Keypair::generate(&mut OsRng);
-        let actor = Actor(keypair.public);
+        let (actor, keypair) = Actor::generate();
         Self {
             keypair,
             pending_proof: HashMap::new(),

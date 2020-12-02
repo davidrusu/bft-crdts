@@ -2,11 +2,20 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use ed25519::{PublicKey, Signature};
+use ed25519::{Keypair, PublicKey, Signature};
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
 #[derive(Eq, Clone, Copy, Serialize, Deserialize)]
 pub struct Actor(pub PublicKey);
+
+impl Actor {
+    pub fn generate() -> (Self, Keypair) {
+        let kp = Keypair::generate(&mut OsRng);
+        let actor = Self(kp.public);
+        (actor, kp)
+    }
+}
 
 impl PartialEq for Actor {
     fn eq(&self, other: &Self) -> bool {
