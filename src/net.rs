@@ -125,7 +125,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
     pub fn count_invalid_packets(&self) -> u64 {
         self.procs
             .iter()
-            .map(|p| p.invalid_packets().values().sum::<u64>())
+            .map(|p| p.invalid_packets.values().sum::<u64>())
             .sum()
     }
 

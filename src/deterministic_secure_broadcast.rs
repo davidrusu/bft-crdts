@@ -1,38 +1,37 @@
 /// An implementation of deterministic SecureBroadcast.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::actor::{Actor, Sig};
+use crate::actor::{SigningActor, Actor, Sig};
 use crate::traits::SecureBroadcastAlgorithm;
 
 use crdts::{CmRDT, CvRDT, Dot, VClock};
-use ed25519::{Keypair, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
-    // The identity of a process is it's keypair
-    keypair: Keypair,
+    // The identity of a process
+    pub identity: SigningActor,
 
     // Msgs this process has initiated and is waiting on BFT agreement for from the network.
-    pending_proof: HashMap<Msg<A::Op>, BTreeMap<Actor, Sig>>,
+    pub pending_proof: HashMap<Msg<A::Op>, BTreeMap<Actor, Sig>>,
 
     // The clock representing the most recently received messages from each process.
     // These are messages that have been acknowledged but not yet
     // This clock must at all times be greator or equal to the `delivered` clock.
-    received: VClock<Actor>,
+    pub received: VClock<Actor>,
 
     // The clock representing the most recent msgs we've delivered to the underlying algorithm `algo`.
-    delivered: VClock<Actor>,
+    pub delivered: VClock<Actor>,
 
     // The state of the algorithm that we are running BFT over.
     // This can be the causal bank described in AT2, or it can be a CRDT.
-    algo: A,
+    pub algo: A,
 
     // The set of members in this network.
-    peers: BTreeSet<Actor>,
+    pub peers: BTreeSet<Actor>,
 
     // Track number of invalid packets received from an actor
-    invalid_packets: BTreeMap<Actor, u64>,
+    pub invalid_packets: BTreeMap<Actor, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,24 +88,21 @@ enum BFTOp<Op> {
 
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     pub fn new() -> Self {
-        let (actor, keypair) = Actor::generate();
+	let identity = SigningActor::default();
+	let algo = A::new(identity.actor());
         Self {
-            keypair,
-            pending_proof: HashMap::new(),
-            algo: A::new(actor),
+            identity,
+            pending_proof: Default::default(),
+            algo,
             peers: Default::default(),
-            delivered: VClock::new(),
-            received: VClock::new(),
+            delivered: Default::default(),
+            received: Default::default(),
             invalid_packets: Default::default(),
         }
     }
 
-    pub fn keypair(&self) -> &Keypair {
-        &self.keypair
-    }
-
     pub fn actor(&self) -> Actor {
-        Actor(self.keypair.public)
+	self.identity.actor()
     }
 
     pub fn state(&self) -> ReplicatedState<A> {
@@ -119,10 +115,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     pub fn peers(&self) -> BTreeSet<Actor> {
         self.peers.clone()
-    }
-
-    pub fn invalid_packets(&self) -> BTreeMap<Actor, u64> {
-        self.invalid_packets.clone().into()
     }
 
     pub fn trust_peer(&mut self, peer: Actor) {
@@ -194,7 +186,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 // NOTE: we do not need to store this message, it will be sent back to us
                 // with the proof of agreement. Our signature will prevent tampering.
-                let sig = self.sign(&msg);
+                let sig = self.identity.sign(&msg);
                 let validation = Payload::SignedValidated { msg, sig };
                 vec![self.send(packet.source, validation)]
             }
@@ -261,7 +253,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn validate_packet(&self, packet: &Packet<A::Op>) -> bool {
-        if !self.verify_sig(&packet.source, &packet.payload, &packet.sig) {
+        if !packet.source.verify(&packet.payload, &packet.sig) {
             println!(
                 "[DSB/SIG] Msg failed signature verification {}->{}",
                 packet.source,
@@ -303,7 +295,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             ],
             Payload::SignedValidated { msg, sig } => vec![
                 (
-                    self.verify_sig(&from, &msg, sig),
+                    from.verify(&msg, sig),
                     "failed sig verification".to_string(),
                 ),
                 (
@@ -333,7 +325,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 (
                     proof
                         .iter()
-                        .all(|(signatory, sig)| self.verify_sig(signatory, &msg, &sig)),
+                        .all(|(signatory, sig)| signatory.verify(&msg, &sig)),
                     "proof contains invalid signature(s)".to_string(),
                 ),
             ],
@@ -392,24 +384,12 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn send(&self, dest: Actor, payload: Payload<A::Op>) -> Packet<A::Op> {
-        let sig = self.sign(&payload);
+        let sig = self.identity.sign(&payload);
         Packet {
             source: self.actor(),
             dest,
             payload,
             sig,
         }
-    }
-
-    fn sign(&self, blob: impl Serialize) -> Sig {
-        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
-        let blob_sig = self.keypair.sign(&blob_bytes);
-
-        Sig(blob_sig)
-    }
-
-    fn verify_sig(&self, source: &Actor, blob: impl Serialize, sig: &Sig) -> bool {
-        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
-        source.0.verify(&blob_bytes, &sig.0).is_ok()
     }
 }
