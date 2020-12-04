@@ -66,9 +66,10 @@ enum Error {
         requester: Actor,
         members: BTreeSet<Actor>,
     },
-    VoteFromPreviousGeneration {
+    VoteNotForThisGeneration {
         vote_gen: Generation,
         gen: Generation,
+        pending_gen: Generation,
     },
 }
 
@@ -137,10 +138,11 @@ impl Proc {
                 dest: *dest,
                 actor: self.id.actor(),
             })
-        } else if *gen <= self.gen {
-            Err(Error::VoteFromPreviousGeneration {
+        } else if *gen <= self.gen || *gen > self.pending_gen {
+            Err(Error::VoteNotForThisGeneration {
                 vote_gen: *gen,
                 gen: self.gen,
+                pending_gen: self.pending_gen,
             })
         } else {
             Err(Error::NotImplemented)
@@ -281,13 +283,15 @@ mod tests {
         let mut packets = proc.reconfig(Reconfig::Join(Actor::default())).unwrap();
         assert_eq!(packets.len(), 1);
 
-        proc.gen += 1; // move to the next gen
+        // move to the next gen
+        proc.gen += 1;
 
         assert_eq!(
             proc.handle_packet(packets.pop().unwrap()),
-            Err(Error::VoteFromPreviousGeneration {
+            Err(Error::VoteNotForThisGeneration {
                 vote_gen: 1,
                 gen: 1,
+                pending_gen: 1,
             })
         );
     }
