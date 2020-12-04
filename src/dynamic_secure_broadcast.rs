@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use crate::actor::{Actor, SigningActor, Sig};
+use crate::actor::{Actor, Sig, SigningActor};
 
 const SOFT_MAX_MEMBERS: usize = 7;
 type Generation = u64;
@@ -48,8 +48,8 @@ enum Error {
     NotImplemented,
     InvalidSignature,
     WrongDestination {
-	dest: Actor,
-	actor: Actor
+        dest: Actor,
+        actor: Actor,
     },
     ReconfigInProgress {
         gen: Generation,
@@ -78,7 +78,7 @@ impl Proc {
     }
 
     pub fn reconfig(&mut self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
-	self.adopt_ballot(Ballot::Propose(reconfig))
+        self.adopt_ballot(Ballot::Propose(reconfig))
     }
 
     pub fn adopt_ballot(&mut self, ballot: Ballot) -> Result<Vec<Packet>, Error> {
@@ -100,21 +100,16 @@ impl Proc {
         self.validate_packet(&packet)?;
         let Packet { vote, source, dest } = packet;
 
-        if self.gen >= vote.gen {
-            Err(Error::VoteFromPreviousGeneration {
-                packet_gen: vote.gen,
-                gen: self.gen,
-            })
-        } else if self.pending_gen + 1 == vote.gen {
+        if self.pending_gen + 1 == vote.gen {
             assert_eq!(self.votes, Default::default());
             // A gen change has begun but this is the first we're hearing of it. Adopt the vote (if we agree with it)
             self.votes.insert(vote.clone());
-	    self.adopt_ballot(vote.ballot.clone())
+            self.adopt_ballot(vote.ballot.clone())
         } else if self.pending_gen == vote.gen {
             Err(Error::NotImplemented)
         } else {
-	    Err(Error::NotImplemented)
-	}
+            Err(Error::NotImplemented)
+        }
     }
 
     fn ensure_no_reconfig_in_progress(&self) -> Result<(), Error> {
@@ -129,19 +124,32 @@ impl Proc {
     }
 
     fn validate_packet(&self, packet: &Packet) -> Result<(), Error> {
-	let Packet { source, dest, vote: Vote { gen, ballot, sig } } = packet;
-	if !source.verify((&ballot, &gen), sig) {
-	    Err(Error::InvalidSignature)
-	} else {
+        let Packet {
+            source,
+            dest,
+            vote: Vote { gen, ballot, sig },
+        } = packet;
+
+        if !source.verify((&ballot, &gen), sig) {
+            Err(Error::InvalidSignature)
+        } else if dest != &self.id.actor() {
+            Err(Error::WrongDestination {
+                dest: *dest,
+                actor: self.id.actor(),
+            })
+        } else if *gen <= self.gen {
+            Err(Error::VoteFromPreviousGeneration {
+                vote_gen: *gen,
+                gen: self.gen,
+            })
+        } else {
             Err(Error::NotImplemented)
-	}
+        }
     }
 
     fn validate_ballot(&self, ballot: &Ballot) -> Result<(), Error> {
         match ballot {
-            Ballot::Propose(reconfig) => {
-		self.validate_reconfig(&reconfig)
-	    },
+            Ballot::Propose(reconfig) => self.validate_reconfig(&reconfig),
             Ballot::Merge(votes) => Err(Error::NotImplemented),
             Ballot::Quorum(votes) => Err(Error::NotImplemented),
         }
@@ -226,7 +234,8 @@ mod tests {
         );
 
         assert!(proc
-            .reconfig(Reconfig::Leave(proc.members.iter().next().unwrap().clone())).is_ok())
+            .reconfig(Reconfig::Leave(proc.members.iter().next().unwrap().clone()))
+            .is_ok())
     }
 
     #[test]
@@ -277,7 +286,7 @@ mod tests {
         assert_eq!(
             proc.handle_packet(packets.pop().unwrap()),
             Err(Error::VoteFromPreviousGeneration {
-                packet_gen: 1,
+                vote_gen: 1,
                 gen: 1,
             })
         );
@@ -285,41 +294,42 @@ mod tests {
 
     #[test]
     fn test_reject_packets_not_destined_for_proc() {
-	let mut proc = Proc::default();
+        let mut proc = Proc::default();
 
-	let ballot = Ballot::Propose(Reconfig::Join(Default::default()));
-	let gen = proc.gen + 1;
-	let source = SigningActor::default();
-	let dest = Default::default();
+        let ballot = Ballot::Propose(Reconfig::Join(Default::default()));
+        let gen = proc.gen + 1;
+        let source = SigningActor::default();
+        let dest = Default::default();
         let sig = source.sign((&ballot, &gen));
 
-	let resp = proc.handle_packet(Packet {
-	    source: source.actor(),
-	    dest,
-	    vote: Vote {
-		ballot, gen, sig
-	    }
-	});
+        let resp = proc.handle_packet(Packet {
+            source: source.actor(),
+            dest,
+            vote: Vote { ballot, gen, sig },
+        });
 
-	assert_eq!(resp, Err(Error::WrongDestination{dest, actor: proc.id.actor()}));
+        assert_eq!(
+            resp,
+            Err(Error::WrongDestination {
+                dest,
+                actor: proc.id.actor()
+            })
+        );
     }
 
     #[test]
     fn test_reject_packets_with_invalid_signatures() {
-	let mut proc = Proc::default();
-	// TODO: add test for packet not destined for you
-	let ballot = Ballot::Propose(Reconfig::Join(Default::default()));
-	let gen = proc.gen + 1;
+        let mut proc = Proc::default();
+        let ballot = Ballot::Propose(Reconfig::Join(Default::default()));
+        let gen = proc.gen + 1;
         let sig = SigningActor::default().sign((&ballot, &gen));
-	let resp = proc.handle_packet(Packet {
-	    source: Default::default(),
-	    dest: proc.id.actor(),
-	    vote: Vote {
-		ballot, gen, sig
-	    }
-	});
+        let resp = proc.handle_packet(Packet {
+            source: Default::default(),
+            dest: proc.id.actor(),
+            vote: Vote { ballot, gen, sig },
+        });
 
-	assert_eq!(resp, Err(Error::InvalidSignature));
+        assert_eq!(resp, Err(Error::InvalidSignature));
     }
 
     quickcheck! {
@@ -355,21 +365,21 @@ mod tests {
             let valid_res = proc.validate_reconfig(&reconfig);
             match reconfig {
                 Reconfig::Join(actor) => {
-		    if proc.members.contains(&actor) {
-			assert_eq!(
+                    if proc.members.contains(&actor) {
+                        assert_eq!(
                             valid_res,
                             Err(Error::JoinRequestForExistingMember {
-				requester: actor,
+                                requester: actor,
                                 members: proc.members.clone()
                             })
-                        )
+                        );
                     } else if members + 1 == 7 {
                         assert_eq!(
                             valid_res,
                             Err(Error::MembersAtCapacity {
                                 members: proc.members.clone()
                             })
-                        )
+                        );
                     } else {
                         assert_eq!(valid_res, Ok(()));
                     }
