@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -107,6 +107,8 @@ impl Proc {
             self.votes.insert(vote.clone());
             self.adopt_ballot(vote.ballot.clone())
         } else if self.pending_gen == vote.gen {
+            // This is a vote from the current generation change
+            assert_eq!(self.gen + 1, self.pending_gen);
             Err(Error::NotImplemented)
         } else {
             Err(Error::NotImplemented)
@@ -337,6 +339,112 @@ mod tests {
     }
 
     quickcheck! {
+        fn prop_interpreter(n: u8, instructions: Vec<(u8, u8, u8)>) -> TestResult {
+            fn quorum(m: usize, n: usize) -> bool {
+                3 * m > 2 * n
+            }
+
+            if n == 0 || n > 7 {
+                return TestResult::discard();
+            }
+
+            let mut procs: Vec<Proc> = (0..n).into_iter().map(|_| Proc::default()).collect();
+
+            // Assume procs[0] is the genesis proc. (trusts itself)
+            let gen_actor = procs[0].id.actor();
+            for proc in procs.iter_mut() {
+                proc.trust(gen_actor);
+            }
+            let mut packets: BTreeMap<Actor, Vec<Packet>> = Default::default();
+            for instruction in instructions {
+                match instruction {
+                    (0, source_idx, _) => {
+                        // deliver packet
+                        let source = procs[(source_idx % n) as usize].id.actor();
+                        if let Some(mut packets_from_source) = packets.remove(&source) {
+                            let packet = packets_from_source.remove(0);
+                            if packets_from_source.len() > 0 {
+                                packets.insert(source, packets_from_source);
+                            }
+
+                            let p = procs
+                                .iter_mut()
+                                .find(|p| p.id.actor() == packet.dest)
+                                .unwrap();
+
+                            match p.handle_packet(packet) {
+                                Ok(resp_packets) =>  {
+                                    packets.entry(p.id.actor()).or_default().extend(resp_packets)
+                                }
+                                Err(err) => {
+                                    assert!(false, "{:?}", err);
+                                }
+                            }
+                        }
+                    }
+                    (1, p_idx, q_idx) => {
+                        // p requests to join q
+                        let p = &procs[(p_idx % n) as usize];
+                        let reconfig = Reconfig::Join(p.id.actor());
+
+                        let mut q = &mut procs[(q_idx % n) as usize];
+                        if let Ok(reconfig_packets) = q.reconfig(reconfig) {
+                            packets.entry(q.id.actor()).or_default().extend(reconfig_packets);
+                        } else {
+                            // invalid request.
+                           // TODO: charactize the types of failures that may occur here.
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            while let Some(source) = packets.keys().next().cloned() {
+                let mut source_packets = packets.remove(&source).unwrap();
+                let packet = source_packets.remove(0);
+                assert_eq!(packet.source, source);
+
+                if source_packets.len() > 0 {
+                    packets.insert(source, source_packets);
+                }
+
+                let p = procs
+                    .iter_mut()
+                    .find(|p| p.id.actor() == packet.dest)
+                    .unwrap();
+
+                if let Ok(resp_packets) = p.handle_packet(packet) {
+                    packets.entry(p.id.actor()).or_default().extend(resp_packets)
+                } else {
+                    // TODO: characterize failures
+                }
+            }
+
+            let mut procs_by_gen: BTreeMap<Generation, Vec<Proc>> = Default::default();
+
+            for proc in procs {
+                procs_by_gen.entry(proc.gen).or_default().push(proc);
+            }
+
+            let max_gen = procs_by_gen.keys().last().unwrap();
+
+            // The last gen should have at least a quorum of nodes
+            assert!(quorum(procs_by_gen[max_gen].len(), n as usize));
+
+            // And procs at each generation should have agreement on members
+            for (gen, procs) in procs_by_gen {
+                let mut proc_iter = procs.iter();
+                let first = proc_iter.next().unwrap();
+                for proc in proc_iter {
+                    assert_eq!(first.members, proc.members);
+                }
+            }
+
+            // ensure all procs are in the same generations
+            // ensure all procs agree on the same
+            TestResult::passed()
+        }
+
         fn prop_validate_reconfig(join_or_leave: bool, actor_idx: usize, members: u8) -> TestResult {
             if members + 1 > 7 {
                 // + 1 from the initial proc
