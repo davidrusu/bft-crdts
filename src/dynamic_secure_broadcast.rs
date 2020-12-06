@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-
     use std::collections::{BTreeMap, BTreeSet};
 
     use crdts::quickcheck::{quickcheck, TestResult};
@@ -70,14 +69,14 @@ mod tests {
             }
         }
 
-        fn has_seen(&self, vote: &Vote) -> bool {
+        fn supersedes(&self, vote: &Vote) -> bool {
             if self == vote {
                 true
             } else {
                 match &self.ballot {
                     Ballot::Propose(_) => false,
                     Ballot::Merge(votes) | Ballot::Quorum(votes) => {
-                        votes.iter().any(|v| v.has_seen(vote))
+                        votes.iter().any(|v| v.supersedes(vote))
                     }
                 }
             }
@@ -121,7 +120,14 @@ mod tests {
         VoterChangedMind {
             reconfigs: BTreeSet<(Actor, Reconfig)>,
         },
-        ExistingVoteFromVoterIsNotPresentInNewVote,
+        ExistingVoteFromVoterIsNotPresentInNewVote {
+            vote: Vote,
+            existing_vote: Vote,
+        },
+        OldVoteReplayed {
+            vote: Vote,
+            existing_vote: Vote,
+        },
         QuorumBallotIsNotQuorum {
             ballot: Ballot,
             members: BTreeSet<Actor>,
@@ -164,7 +170,17 @@ mod tests {
             self.validate_packet(&packet)?;
             let Packet { vote, .. } = packet;
 
-            if self.pending_gen + 1 == vote.gen {
+            if self.votes.contains_key(&vote.voter)
+                && &self.votes[&vote.voter] != &vote
+                && self.votes[&vote.voter].supersedes(&vote)
+            {
+                // We've already seen this vote, drop it.
+                let existing_vote = self.votes[&vote.voter].clone();
+                Err(Error::OldVoteReplayed {
+                    vote,
+                    existing_vote,
+                })
+            } else if self.pending_gen + 1 == vote.gen {
                 assert_eq!(self.votes, Default::default());
                 // A gen change has begun but this is the first we're hearing of it. Adopt the vote (if we agree with it)
                 self.votes.insert(vote.voter, vote.clone());
@@ -316,9 +332,13 @@ mod tests {
                     members: self.members.clone(),
                 })
             } else if self.votes.contains_key(&vote.voter)
-                && !vote.has_seen(&self.votes[&vote.voter])
+                && !vote.supersedes(&self.votes[&vote.voter])
+                && !self.votes[&vote.voter].supersedes(&vote)
             {
-                Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote)
+                Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote {
+                    vote: vote.clone(),
+                    existing_vote: self.votes[&vote.voter].clone(),
+                })
             } else if vote.gen == self.gen + 1 && self.pending_gen == self.gen {
                 // We are starting a vote for the next generation
                 assert_eq!(self.votes, Default::default()); // we should not have any votes yet
@@ -427,10 +447,10 @@ mod tests {
         let mut proc = Proc::default();
         proc.trust(proc.id.actor());
         assert!(proc.reconfig(Reconfig::Join(Actor::default())).is_ok());
-        assert_eq!(
+        assert!(matches!(
             proc.reconfig(Reconfig::Join(Actor::default())),
-            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote)
-        );
+            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { .. })
+        ));
     }
 
     #[test]
@@ -653,6 +673,7 @@ mod tests {
         fn drain_queued_packets(&mut self) {
             while self.packets.len() > 0 {
                 let source = self.packets.keys().next().unwrap().clone();
+                println!("Delivering from {:?}, {:#?}", source, self);
                 self.deliver_packet_from_source(source);
             }
         }
