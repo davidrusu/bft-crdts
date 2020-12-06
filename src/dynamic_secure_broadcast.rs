@@ -438,11 +438,26 @@ mod tests {
     }
 
     #[test]
+    fn test_reject_vote_from_non_member() {
+        let mut net = Net::with_procs(2);
+        let p0 = net.procs[0].id.actor();
+        let p1 = net.procs[1].id.actor();
+        net.trust(p1, p0);
+        net.trust(p1, p1);
+
+        let resp = net.procs[1].reconfig(Reconfig::Join(Default::default()));
+        assert!(resp.is_ok());
+        net.queue_packets(resp.unwrap());
+        net.drain_queued_packets();
+    }
+
+    #[test]
     fn test_reject_new_join_if_we_are_at_capacity() {
         let mut proc = Proc {
             members: (0..7).map(|_| Actor::default()).collect(),
             ..Proc::default()
         };
+        proc.trust(proc.id.actor());
 
         assert_eq!(
             proc.reconfig(Reconfig::Join(Actor::default())),
@@ -462,6 +477,7 @@ mod tests {
             members: (0..1).map(|_| Actor::default()).collect(),
             ..Proc::default()
         };
+        proc.trust(proc.id.actor());
 
         let member = proc.members.iter().next().unwrap().clone();
 
@@ -480,6 +496,7 @@ mod tests {
             members: (0..1).map(|_| Actor::default()).collect(),
             ..Proc::default()
         };
+        proc.trust(proc.id.actor());
 
         let leaving_actor = Actor::default();
         assert_eq!(
@@ -641,6 +658,13 @@ mod tests {
             while self.packets.len() > 0 {
                 let source = self.packets.keys().next().unwrap().clone();
                 self.deliver_packet_from_source(source);
+            }
+        }
+
+        fn trust(&mut self, p: Actor, q: Actor) {
+            if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
+                proc.trust(q);
+                self.expected_members.entry(p).or_default().insert(q);
             }
         }
     }
