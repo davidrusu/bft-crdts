@@ -415,6 +415,86 @@ mod tests {
         assert_eq!(resp, Err(Error::InvalidSignature));
     }
 
+    #[derive(Default)]
+    struct Net {
+        procs: Vec<Proc>,
+        expected_members: BTreeMap<Actor, BTreeSet<Actor>>,
+        pending_reconfigs: BTreeSet<Reconfig>,
+        packets: BTreeMap<Actor, Vec<Packet>>,
+    }
+
+    impl Net {
+        fn with_procs(n: usize) -> Self {
+            Self {
+                procs: (0..n).into_iter().map(|_| Proc::default()).collect(),
+                ..Default::default()
+            }
+        }
+
+        fn genesis(&self) -> Actor {
+            assert!(!self.procs.is_empty());
+            self.procs[0].id.actor()
+        }
+
+        fn deliver_packet_from_source(&mut self, source: Actor) {
+            let packet = if let Some(packets) = self.packets.get_mut(&source) {
+                assert!(packets.len() > 0);
+                packets.remove(0)
+            } else {
+                return;
+            };
+
+            self.packets = self
+                .packets
+                .clone()
+                .into_iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .collect();
+
+            assert_eq!(packet.source, source);
+
+            let dest_proc = self
+                .procs
+                .iter_mut()
+                .find(|p| p.id.actor() == packet.dest)
+                .unwrap();
+
+            let dest_members = self.expected_members.entry(packet.dest).or_default();
+            match dest_proc.handle_packet(packet) {
+                Ok(resp_packets) => {
+                    // A process only accepts a packet if it considers the sender a member
+                    assert!(dest_members.contains(&source));
+
+                    // TODO: inspect these packets
+                    assert!(resp_packets
+                        .iter()
+                        .all(|p| p.source == dest_proc.id.actor()));
+                    self.queue_packets(resp_packets);
+                }
+                Err(Error::VoteFromNonMember { voter, members }) => {
+                    assert_eq!(voter, source);
+                    assert_eq!(members, dest_members.clone());
+                    assert!(!dest_members.contains(&source));
+                }
+                Err(err) => {
+                    panic!("Unexpected err: {:?}", err);
+                }
+            }
+        }
+
+        fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
+            for packet in packets {
+                self.packets.entry(packet.source).or_default().push(packet);
+            }
+        }
+
+        fn drain_queued_packets(&mut self) {
+            while let Some(source) = self.packets.keys().next() {
+                self.deliver_packet_from_source(*source);
+            }
+        }
+    }
+
     quickcheck! {
         fn prop_interpreter(n: u8, instructions: Vec<(u8, u8, u8)>) -> TestResult {
             fn quorum(m: usize, n: usize) -> bool {
@@ -425,71 +505,37 @@ mod tests {
                 return TestResult::discard();
             }
 
-            let mut procs: Vec<Proc> = (0..n).into_iter().map(|_| Proc::default()).collect();
-            let mut members_per_proc: BTreeMap<Actor, BTreeSet<Actor>> = Default::default();
-            let mut pending_reconfigs: BTreeSet<Reconfig> = Default::default();
+            let mut net = Net::with_procs(n as usize);
 
             // Assume procs[0] is the genesis proc. (trusts itself)
-            let gen_actor = procs[0].id.actor();
-            for proc in procs.iter_mut() {
-                proc.trust(gen_actor);
-                members_per_proc.entry(proc.id.actor()).or_default().insert(gen_actor);
+            let gen_proc = net.genesis();
+            for proc in net.procs.iter_mut() {
+                proc.trust(gen_proc);
+                net.expected_members.entry(proc.id.actor()).or_default().insert(gen_proc);
             }
-            let mut packets: BTreeMap<Actor, Vec<Packet>> = Default::default();
+
+
             for instruction in instructions {
                 match instruction {
                     (0, source_idx, _) => {
                         // deliver packet
-                        let source = procs[source_idx.min(n -1) as usize].id.actor();
-                        if let Some(mut packets_from_source) = packets.remove(&source) {
-                            let packet = packets_from_source.remove(0);
-                            if packets_from_source.len() > 0 {
-                                packets.insert(source, packets_from_source);
-                            }
-
-                            let dest = packet.dest;
-
-                            let p = procs
-                                .iter_mut()
-                                .find(|p| p.id.actor() == dest)
-                                .unwrap();
-
-                            let resp = p.handle_packet(packet);
-
-                            // this process should not have accepted this packet if it does not consider it a member
-
-                            let dest_members = members_per_proc.entry(dest).or_default();
-                            if dest_members.contains(&source) {
-                                assert!(resp.is_ok())
-                            } else {
-                                assert_eq!(
-                                    resp,
-                                    Err(Error::VoteFromNonMember{ voter: source, members: dest_members.clone() })
-                                )
-                            }
-                            match resp {
-                                Ok(resp_packets) =>  {
-                                    packets.entry(p.id.actor()).or_default().extend(resp_packets)
-                                }
-                                Err(err) => {
-                                    assert!(false, "{:?}", err);
-                                }
-                            }
-                        }
+                        let source = net.procs[source_idx.min(n -1) as usize].id.actor();
+                        net.deliver_packet_from_source(source);
                     }
                     (1, p_idx, q_idx) => {
                         // p requests to join q
-                        let p = procs[p_idx.min(n - 1) as usize].id.actor();
+                        let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
                         let reconfig = Reconfig::Join(p);
 
-                        let q = &mut procs[q_idx.min(n - 1) as usize];
+                        let q = &mut net.procs[q_idx.min(n - 1) as usize];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
-                                pending_reconfigs.insert(reconfig);
-                                packets.entry(q.id.actor()).or_default().extend(reconfig_packets);
+                                net.pending_reconfigs.insert(reconfig);
+                                assert!(reconfig_packets.iter().all(|p| p.source == q.id.actor()));
+                                net.queue_packets(reconfig_packets);
                             }
                             Err(Error::JoinRequestForExistingMember { .. }) => {
-                                assert!(members_per_proc.entry(q.id.actor()).or_default().contains(&p));
+                                assert!(net.expected_members[&q.id.actor()].contains(&p));
                             }
                             Err(err) => {
                                 // invalid request.
@@ -501,30 +547,11 @@ mod tests {
                 }
             }
 
-            while let Some(source) = packets.keys().next().cloned() {
-                let mut source_packets = packets.remove(&source).unwrap();
-                let packet = source_packets.remove(0);
-                assert_eq!(packet.source, source);
-
-                if source_packets.len() > 0 {
-                    packets.insert(source, source_packets);
-                }
-
-                let p = procs
-                    .iter_mut()
-                    .find(|p| p.id.actor() == packet.dest)
-                    .unwrap();
-
-                if let Ok(resp_packets) = p.handle_packet(packet) {
-                    packets.entry(p.id.actor()).or_default().extend(resp_packets)
-                } else {
-                    panic!("failed packet handle is not implemented");
-                }
-            }
+            net.drain_queued_packets();
 
             let mut procs_by_gen: BTreeMap<Generation, Vec<Proc>> = Default::default();
 
-            for proc in procs {
+            for proc in net.procs {
                 procs_by_gen.entry(proc.gen).or_default().push(proc);
             }
 
@@ -542,7 +569,7 @@ mod tests {
                 }
             }
 
-            assert_eq!(pending_reconfigs, Default::default());
+            assert_eq!(net.pending_reconfigs, Default::default());
 
             // ensure all procs are in the same generations
             // ensure all procs agree on the same
