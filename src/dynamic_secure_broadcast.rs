@@ -122,6 +122,10 @@ mod tests {
             reconfigs: BTreeSet<(Actor, Reconfig)>,
         },
         ExistingVoteFromVoterIsNotPresentInNewVote,
+        QuorumBallotIsNotQuorum {
+            ballot: Ballot,
+            members: BTreeSet<Actor>,
+        },
     }
 
     impl Proc {
@@ -174,19 +178,20 @@ mod tests {
 
                 self.votes.insert(vote.voter, vote);
 
-                if self.is_split_vote() {
+                if self.is_split_vote(&self.votes.values().cloned().collect()) {
                     println!("[DSB] Detected split vote");
                     // We've detected that we can't form quorum
                     self.adopt_ballot(
                         self.pending_gen,
                         Ballot::Merge(self.votes.values().cloned().collect()),
                     )
-                } else if self.is_quorum() {
+                } else if self.is_quorum(&self.votes.values().cloned().collect()) {
                     // we have quorum.. but over what?
-                    if self.is_quorum_over_quorums() {
+                    if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
                         println!("[DSB] Detected quorum over quorum");
                         // The network has come to agreement, apply the reconfigs.
-                        for reconfig in self.resolve_votes() {
+                        for reconfig in self.resolve_votes(&self.votes.values().cloned().collect())
+                        {
                             self.apply(reconfig);
                         }
                         Ok(vec![])
@@ -213,17 +218,12 @@ mod tests {
             };
         }
 
-        fn count_votes(&self) -> BTreeMap<BTreeSet<Reconfig>, usize> {
-            let round = self
-                .votes
-                .values()
-                .map(|v| v.round())
-                .max()
-                .unwrap_or_default();
+        fn count_votes(&self, votes: &BTreeSet<Vote>) -> BTreeMap<BTreeSet<Reconfig>, usize> {
+            let round = votes.iter().map(|v| v.round()).max().unwrap_or_default();
 
             let mut count: BTreeMap<BTreeSet<Reconfig>, usize> = Default::default();
 
-            for vote in self.votes.values().filter(|v| v.round() == round) {
+            for vote in votes.iter().filter(|v| v.round() == round) {
                 let c = count
                     .entry(
                         vote.reconfigs()
@@ -238,8 +238,8 @@ mod tests {
             count
         }
 
-        fn is_split_vote(&self) -> bool {
-            let counts = self.count_votes();
+        fn is_split_vote(&self, votes: &BTreeSet<Vote>) -> bool {
+            let counts = self.count_votes(votes);
             let total_votes: usize = counts.values().sum();
             let most_votes = counts.values().max().cloned().unwrap_or_default();
             let n = self.members.len();
@@ -249,9 +249,9 @@ mod tests {
             3 * total_votes > 2 * n && 3 * predicted_votes <= 2 * n
         }
 
-        fn is_quorum(&self) -> bool {
+        fn is_quorum(&self, votes: &BTreeSet<Vote>) -> bool {
             let most_votes = self
-                .count_votes()
+                .count_votes(votes)
                 .values()
                 .max()
                 .cloned()
@@ -261,12 +261,11 @@ mod tests {
             3 * most_votes > 2 * n
         }
 
-        fn is_quorum_over_quorums(&self) -> bool {
-            let winning_reconfigs = self.resolve_votes();
+        fn is_quorum_over_quorums(&self, votes: &BTreeSet<Vote>) -> bool {
+            let winning_reconfigs = self.resolve_votes(votes);
 
-            let count_of_quorums = self
-                .votes
-                .values()
+            let count_of_quorums = votes
+                .iter()
                 .filter(|v| {
                     v.reconfigs()
                         .into_iter()
@@ -280,9 +279,9 @@ mod tests {
             3 * count_of_quorums > 2 * self.members.len()
         }
 
-        fn resolve_votes(&self) -> BTreeSet<Reconfig> {
+        fn resolve_votes(&self, votes: &BTreeSet<Vote>) -> BTreeSet<Reconfig> {
             let (winning_reconfigs, _) = self
-                .count_votes()
+                .count_votes(votes)
                 .into_iter()
                 .max_by(|a, b| (a.1).cmp(&b.1))
                 .unwrap_or_default();
@@ -358,7 +357,26 @@ mod tests {
             match ballot {
                 Ballot::Propose(reconfig) => self.validate_reconfig(&reconfig),
                 Ballot::Merge(_votes) => panic!("validate(Merge) not implemented"),
-                Ballot::Quorum(_votes) => panic!("validate(Quorum) not implemented"),
+                Ballot::Quorum(votes) => {
+                    if !self.is_quorum(votes) {
+                        Err(Error::QuorumBallotIsNotQuorum {
+                            ballot: ballot.clone(),
+                            members: self.members.clone(),
+                        })
+                    } else {
+                        for vote in votes.iter() {
+                            if vote.gen != gen {
+                                return Err(Error::VoteNotForThisGeneration {
+                                    vote_gen: vote.gen,
+                                    gen: gen,
+                                    pending_gen: gen,
+                                });
+                            }
+                            self.validate_vote(vote)?;
+                        }
+                        Ok(())
+                    }
+                }
             }
         }
 
