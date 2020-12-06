@@ -98,10 +98,6 @@ mod tests {
             dest: Actor,
             actor: Actor,
         },
-        ReconfigInProgress {
-            gen: Generation,
-            pending_gen: Generation,
-        },
         MembersAtCapacity {
             members: BTreeSet<Actor>,
         },
@@ -142,8 +138,6 @@ mod tests {
             gen: Generation,
             ballot: Ballot,
         ) -> Result<Vec<Packet>, Error> {
-            self.ensure_no_reconfig_in_progress()?;
-
             assert!(self.gen == gen || self.gen + 1 == gen);
 
             let sig = self.id.sign((&ballot, &gen));
@@ -158,9 +152,7 @@ mod tests {
             self.validate_vote(&vote)?;
 
             self.pending_gen = gen;
-
             self.votes.insert(self.id.actor(), vote.clone());
-
             Ok(self.broadcast(vote))
         }
 
@@ -183,6 +175,7 @@ mod tests {
                 self.votes.insert(vote.voter, vote);
 
                 if self.is_split_vote() {
+                    println!("[DSB] Detected split vote");
                     // We've detected that we can't form quorum
                     self.adopt_ballot(
                         self.pending_gen,
@@ -191,12 +184,14 @@ mod tests {
                 } else if self.is_quorum() {
                     // we have quorum.. but over what?
                     if self.is_quorum_over_quorums() {
+                        println!("[DSB] Detected quorum over quorum");
                         // The network has come to agreement, apply the reconfigs.
                         for reconfig in self.resolve_votes() {
                             self.apply(reconfig);
                         }
                         Ok(vec![])
                     } else {
+                        println!("[DSB] Detected quorum");
                         self.adopt_ballot(
                             self.pending_gen,
                             Ballot::Quorum(self.votes.values().cloned().collect()),
@@ -293,17 +288,6 @@ mod tests {
                 .unwrap_or_default();
 
             winning_reconfigs
-        }
-
-        fn ensure_no_reconfig_in_progress(&self) -> Result<(), Error> {
-            if self.gen != self.pending_gen {
-                Err(Error::ReconfigInProgress {
-                    gen: self.gen,
-                    pending_gen: self.pending_gen,
-                })
-            } else {
-                Ok(())
-            }
         }
 
         fn validate_packet(&self, packet: &Packet) -> Result<(), Error> {
@@ -421,19 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_new_reconfig_if_one_in_progress() {
-        let mut proc = Proc {
-            gen: 0,
-            pending_gen: 1,
-            ..Proc::default()
-        };
-
+    fn test_reject_changing_reconfig_when_one_is_in_progress() {
+        let mut proc = Proc::default();
+        proc.trust(proc.id.actor());
+        assert!(proc.reconfig(Reconfig::Join(Actor::default())).is_ok());
         assert_eq!(
             proc.reconfig(Reconfig::Join(Actor::default())),
-            Err(Error::ReconfigInProgress {
-                gen: 0,
-                pending_gen: 1
-            })
+            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote)
         );
     }
 
@@ -581,7 +559,7 @@ mod tests {
         assert_eq!(resp, Err(Error::InvalidSignature));
     }
 
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct Net {
         procs: Vec<Proc>,
         expected_members: BTreeMap<Actor, BTreeSet<Actor>>,
@@ -643,7 +621,7 @@ mod tests {
                     assert!(!dest_members.contains(&source));
                 }
                 Err(err) => {
-                    panic!("Unexpected err: {:?}", err);
+                    panic!("Unexpected err: {:?} {:#?}", err, self);
                 }
             }
         }
@@ -679,6 +657,8 @@ mod tests {
                 return TestResult::discard();
             }
 
+            println!("--------------------------------------");
+
             let mut net = Net::with_procs(n as usize);
 
             // Assume procs[0] is the genesis proc. (trusts itself)
@@ -690,6 +670,7 @@ mod tests {
 
 
             for instruction in instructions {
+                println!("{:#?}", net);
                 match instruction {
                     (0, source_idx, _) => {
                         // deliver packet
@@ -711,6 +692,9 @@ mod tests {
                             Err(Error::JoinRequestForExistingMember { .. }) => {
                                 assert!(net.expected_members[&q.id.actor()].contains(&p));
                             }
+                            Err(Error::VoteFromNonMember { .. }) => {
+                                assert!(!net.expected_members[&q.id.actor()].contains(&q.id.actor()));
+                            }
                             Err(err) => {
                                 // invalid request.
                                 panic!("Failure to reconfig is not handled yet: {:?}", err);
@@ -721,7 +705,10 @@ mod tests {
                 }
             }
 
+            println!("{:#?}", net);
+            println!("--  [DRAINING]  --");
             net.drain_queued_packets();
+            println!("{:#?}", net);
 
             let mut procs_by_gen: BTreeMap<Generation, Vec<Proc>> = Default::default();
 
