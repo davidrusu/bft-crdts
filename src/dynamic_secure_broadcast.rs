@@ -134,6 +134,16 @@ impl Proc {
         } else if self.pending_gen == vote.gen {
             // This is a vote from the current generation change
             assert_eq!(self.gen + 1, self.pending_gen);
+
+            // we must have voted to be in this state
+            assert!(self
+                .votes
+                .iter()
+                .find(|v| v.voter == self.id.actor())
+                .is_some());
+
+            self.votes.insert(vote);
+
             panic!("Not Implemented");
         } else {
             panic!("Not Implemented");
@@ -417,6 +427,7 @@ mod tests {
 
             let mut procs: Vec<Proc> = (0..n).into_iter().map(|_| Proc::default()).collect();
             let mut members_per_proc: BTreeMap<Actor, BTreeSet<Actor>> = Default::default();
+            let mut pending_reconfigs: BTreeSet<Reconfig> = Default::default();
 
             // Assume procs[0] is the genesis proc. (trusts itself)
             let gen_actor = procs[0].id.actor();
@@ -468,15 +479,22 @@ mod tests {
                     }
                     (1, p_idx, q_idx) => {
                         // p requests to join q
-                        let p = &procs[p_idx.min(n - 1) as usize];
-                        let reconfig = Reconfig::Join(p.id.actor());
+                        let p = procs[p_idx.min(n - 1) as usize].id.actor();
+                        let reconfig = Reconfig::Join(p);
 
                         let q = &mut procs[q_idx.min(n - 1) as usize];
-                        if let Ok(reconfig_packets) = q.reconfig(reconfig) {
-                            packets.entry(q.id.actor()).or_default().extend(reconfig_packets);
-                        } else {
-                            // invalid request.
-                           // TODO: charactize the types of failures that may occur here.
+                        match q.reconfig(reconfig.clone()) {
+                            Ok(reconfig_packets) => {
+                                pending_reconfigs.insert(reconfig);
+                                packets.entry(q.id.actor()).or_default().extend(reconfig_packets);
+                            }
+                            Err(Error::JoinRequestForExistingMember { .. }) => {
+                                assert!(members_per_proc.entry(q.id.actor()).or_default().contains(&p));
+                            }
+                            Err(err) => {
+                                // invalid request.
+                                panic!("Failure to reconfig is not handled yet: {:?}", err);
+                            }
                         }
                     }
                     _ => {}
@@ -500,7 +518,7 @@ mod tests {
                 if let Ok(resp_packets) = p.handle_packet(packet) {
                     packets.entry(p.id.actor()).or_default().extend(resp_packets)
                 } else {
-                    // TODO: characterize failures
+                    panic!("failed packet handle is not implemented");
                 }
             }
 
@@ -523,6 +541,8 @@ mod tests {
                     assert_eq!(first.members, proc.members);
                 }
             }
+
+            assert_eq!(pending_reconfigs, Default::default());
 
             // ensure all procs are in the same generations
             // ensure all procs agree on the same
