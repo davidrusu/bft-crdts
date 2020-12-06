@@ -1,413 +1,424 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use serde::Serialize;
-
-use crate::actor::{Actor, Sig, SigningActor};
-
-const SOFT_MAX_MEMBERS: usize = 7;
-type Generation = u64;
-
-#[derive(Debug, Default)]
-struct Proc {
-    id: SigningActor,
-    gen: Generation,
-    pending_gen: Generation,
-    members: BTreeSet<Actor>,
-    votes: BTreeMap<Actor, Vote>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-enum Reconfig {
-    Join(Actor),
-    Leave(Actor),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-enum Ballot {
-    Propose(Reconfig),
-    Merge(BTreeSet<Vote>),
-    Quorum(BTreeSet<Vote>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-struct Vote {
-    gen: Generation,
-    ballot: Ballot,
-    voter: Actor,
-    sig: Sig,
-}
-
-impl Vote {
-    fn is_quorum(&self) -> bool {
-        match self.ballot {
-            Ballot::Quorum(_) => true,
-            _ => false,
-        }
-    }
-
-    fn round(&self) -> usize {
-        match &self.ballot {
-            Ballot::Propose(_) => 1,
-            Ballot::Merge(votes) | Ballot::Quorum(votes) => {
-                assert!(!votes.is_empty());
-                votes.iter().map(|v| v.round()).max().unwrap() + 1
-            }
-        }
-    }
-
-    fn reconfigs(&self) -> BTreeSet<(Actor, Reconfig)> {
-        match &self.ballot {
-            Ballot::Propose(reconfig) => vec![(self.voter, reconfig.clone())].into_iter().collect(),
-            Ballot::Merge(votes) | Ballot::Quorum(votes) => {
-                votes.iter().flat_map(|v| v.reconfigs()).collect()
-            }
-        }
-    }
-
-    fn has_seen(&self, vote: &Vote) -> bool {
-        if self == vote {
-            true
-        } else {
-            match &self.ballot {
-                Ballot::Propose(_) => false,
-                Ballot::Merge(votes) | Ballot::Quorum(votes) => {
-                    votes.iter().any(|v| v.has_seen(vote))
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Packet {
-    vote: Vote,
-    source: Actor,
-    dest: Actor,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Error {
-    NotImplemented,
-    InvalidSignature,
-    WrongDestination {
-        dest: Actor,
-        actor: Actor,
-    },
-    ReconfigInProgress {
-        gen: Generation,
-        pending_gen: Generation,
-    },
-    MembersAtCapacity {
-        members: BTreeSet<Actor>,
-    },
-    JoinRequestForExistingMember {
-        requester: Actor,
-        members: BTreeSet<Actor>,
-    },
-    LeaveRequestForNonMember {
-        requester: Actor,
-        members: BTreeSet<Actor>,
-    },
-    VoteNotForThisGeneration {
-        vote_gen: Generation,
-        gen: Generation,
-        pending_gen: Generation,
-    },
-    VoteFromNonMember {
-        voter: Actor,
-        members: BTreeSet<Actor>,
-    },
-    VoterChangedMind {
-        reconfigs: BTreeSet<(Actor, Reconfig)>,
-    },
-    ExistingVoteFromVoterIsNotPresentInNewVote,
-}
-
-impl Proc {
-    pub fn trust(&mut self, actor: Actor) {
-        self.members.insert(actor);
-    }
-
-    pub fn reconfig(&mut self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
-        self.adopt_ballot(self.gen + 1, Ballot::Propose(reconfig))
-    }
-
-    pub fn adopt_ballot(&mut self, gen: Generation, ballot: Ballot) -> Result<Vec<Packet>, Error> {
-        self.ensure_no_reconfig_in_progress()?;
-
-        assert!(self.gen == gen || self.gen + 1 == gen);
-        self.pending_gen = gen;
-
-        let gen = self.pending_gen;
-        let sig = self.id.sign((&ballot, &gen));
-        let voter = self.id.actor();
-        let vote = Vote {
-            ballot,
-            gen,
-            voter,
-            sig,
-        };
-
-        self.validate_vote(&vote)?;
-
-        self.votes.insert(self.id.actor(), vote.clone());
-
-        Ok(self.broadcast(vote))
-    }
-
-    pub fn handle_packet(&mut self, packet: Packet) -> Result<Vec<Packet>, Error> {
-        self.validate_packet(&packet)?;
-        let Packet { vote, source, dest } = packet;
-
-        if self.pending_gen + 1 == vote.gen {
-            assert_eq!(self.votes, Default::default());
-            // A gen change has begun but this is the first we're hearing of it. Adopt the vote (if we agree with it)
-            self.votes.insert(vote.voter, vote.clone());
-            self.adopt_ballot(vote.gen, vote.ballot.clone())
-        } else if self.pending_gen == vote.gen {
-            // This is a vote from the current generation change
-            assert_eq!(self.gen + 1, self.pending_gen);
-
-            // we must have voted to be in this state
-            assert!(self.votes.contains_key(&self.id.actor()));
-
-            self.votes.insert(vote.voter, vote);
-
-            if self.is_split_vote() {
-                // We've detected that we can't form quorum
-                self.adopt_ballot(
-                    self.pending_gen,
-                    Ballot::Merge(self.votes.values().cloned().collect()),
-                )
-            } else if self.is_quorum() {
-                // we have quorum.. but over what?
-                if self.is_quorum_over_quorums() {
-                    // The network has come to agreement, apply the reconfigs.
-                    for reconfig in self.resolve_votes() {
-                        self.apply(reconfig);
-                    }
-                    Ok(vec![])
-                } else {
-                    self.adopt_ballot(
-                        self.pending_gen,
-                        Ballot::Quorum(self.votes.values().cloned().collect()),
-                    )
-                }
-            } else {
-                // still waiting for more votes
-                Ok(vec![])
-            }
-        } else {
-            panic!("Not Implemented");
-        }
-    }
-
-    fn apply(&mut self, reconfig: Reconfig) {
-        match reconfig {
-            Reconfig::Join(peer) => self.members.insert(peer),
-            Reconfig::Leave(peer) => self.members.remove(&peer),
-        };
-    }
-
-    fn count_votes(&self) -> BTreeMap<BTreeSet<Reconfig>, usize> {
-        let round = self
-            .votes
-            .values()
-            .map(|v| v.round())
-            .max()
-            .unwrap_or_default();
-
-        let mut count: BTreeMap<BTreeSet<Reconfig>, usize> = Default::default();
-
-        for vote in self.votes.values().filter(|v| v.round() == round) {
-            let c = count
-                .entry(
-                    vote.reconfigs()
-                        .into_iter()
-                        .map(|(_, reconfig)| reconfig)
-                        .collect(),
-                )
-                .or_default();
-            *c += 1;
-        }
-
-        count
-    }
-
-    fn is_split_vote(&self) -> bool {
-        let counts = self.count_votes();
-        let total_votes: usize = counts.values().sum();
-        let most_votes = counts.values().max().cloned().unwrap_or_default();
-        let n = self.members.len();
-        let outstanding_votes = n - total_votes;
-        let predicted_votes = most_votes + outstanding_votes;
-
-        3 * total_votes > 2 * n && 3 * predicted_votes <= 2 * n
-    }
-
-    fn is_quorum(&self) -> bool {
-        let most_votes = self
-            .count_votes()
-            .values()
-            .max()
-            .cloned()
-            .unwrap_or_default();
-        let n = self.members.len();
-
-        3 * most_votes > 2 * n
-    }
-
-    fn is_quorum_over_quorums(&self) -> bool {
-        let winning_reconfigs = self.resolve_votes();
-
-        let count_of_quorums = self
-            .votes
-            .values()
-            .filter(|v| {
-                v.reconfigs()
-                    .into_iter()
-                    .map(|(_, r)| r)
-                    .collect::<BTreeSet<_>>()
-                    == winning_reconfigs
-            })
-            .filter(|v| v.is_quorum())
-            .count();
-
-        3 * count_of_quorums > 2 * self.members.len()
-    }
-
-    fn resolve_votes(&self) -> BTreeSet<Reconfig> {
-        let (winning_reconfigs, _) = self
-            .count_votes()
-            .into_iter()
-            .max_by(|a, b| (a.1).cmp(&b.1))
-            .unwrap_or_default();
-
-        winning_reconfigs
-    }
-
-    fn ensure_no_reconfig_in_progress(&self) -> Result<(), Error> {
-        if self.gen != self.pending_gen {
-            Err(Error::ReconfigInProgress {
-                gen: self.gen,
-                pending_gen: self.pending_gen,
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn validate_packet(&self, packet: &Packet) -> Result<(), Error> {
-        let Packet { source, dest, vote } = packet;
-
-        if dest != &self.id.actor() {
-            Err(Error::WrongDestination {
-                dest: *dest,
-                actor: self.id.actor(),
-            })
-        } else if *source != vote.voter {
-            panic!(
-                "Packet source different from voter, not sure if this is allowed {:#?}",
-                packet
-            );
-        } else {
-            self.validate_vote(vote)
-        }
-    }
-
-    fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
-        if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig) {
-            Err(Error::InvalidSignature)
-        } else if self.votes.contains_key(&vote.voter) && !vote.has_seen(&self.votes[&vote.voter]) {
-            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote)
-        } else if vote.gen == self.gen + 1 && self.pending_gen == self.gen {
-            // We are starting a vote for the next generation
-            assert_eq!(self.votes, Default::default()); // we should not have any votes yet
-            self.validate_ballot(vote.gen, &vote.ballot)
-        } else if self.pending_gen == self.gen + 1 && vote.gen == self.pending_gen {
-            // This is a vote for this generation
-            assert_ne!(self.votes, Default::default()); // we should have at least one vote
-
-            // Ensure that nobody is trying to change their reconfig's.
-            let reconfigs: BTreeSet<(Actor, Reconfig)> = self
-                .votes
-                .values()
-                .flat_map(|v| v.reconfigs())
-                .chain(vote.reconfigs())
-                .collect();
-
-            let voters: BTreeSet<Actor> = reconfigs.iter().map(|(actor, _)| *actor).collect();
-            if voters.len() != reconfigs.len() {
-                assert!(voters.len() > reconfigs.len());
-                Err(Error::VoterChangedMind { reconfigs })
-            } else {
-                self.validate_ballot(vote.gen, &vote.ballot)
-            }
-        } else if vote.gen <= self.gen || vote.gen > self.pending_gen {
-            Err(Error::VoteNotForThisGeneration {
-                vote_gen: vote.gen,
-                gen: self.gen,
-                pending_gen: self.pending_gen,
-            })
-        } else {
-            panic!("Unhandled case {:?} {:#?}", vote, self);
-        }
-    }
-
-    fn validate_ballot(&self, gen: Generation, ballot: &Ballot) -> Result<(), Error> {
-        match ballot {
-            Ballot::Propose(reconfig) => self.validate_reconfig(&reconfig),
-            Ballot::Merge(votes) => panic!("validate(Merge) not implemented"),
-            Ballot::Quorum(votes) => panic!("validate(Quorum) not implemented"),
-        }
-    }
-
-    fn validate_reconfig(&self, reconfig: &Reconfig) -> Result<(), Error> {
-        match reconfig {
-            Reconfig::Join(actor) => {
-                if self.members.contains(&actor) {
-                    Err(Error::JoinRequestForExistingMember {
-                        requester: *actor,
-                        members: self.members.clone(),
-                    })
-                } else if self.members.len() >= SOFT_MAX_MEMBERS {
-                    Err(Error::MembersAtCapacity {
-                        members: self.members.clone(),
-                    })
-                } else {
-                    Ok(())
-                }
-            }
-            Reconfig::Leave(actor) => {
-                if !self.members.contains(&actor) {
-                    Err(Error::LeaveRequestForNonMember {
-                        requester: *actor,
-                        members: self.members.clone(),
-                    })
-                } else {
-                    Ok(())
-                }
-            }
-        }
-    }
-
-    fn broadcast(&self, vote: Vote) -> Vec<Packet> {
-        self.members
-            .iter()
-            .cloned()
-            .map(|member| Packet {
-                vote: vote.clone(),
-                source: self.id.actor(),
-                dest: member,
-            })
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+
+    use std::collections::{BTreeMap, BTreeSet};
+
     use crdts::quickcheck::{quickcheck, TestResult};
+    use serde::Serialize;
+
+    use crate::actor::{Actor, Sig, SigningActor};
+
+    const SOFT_MAX_MEMBERS: usize = 7;
+    type Generation = u64;
+
+    #[derive(Debug, Default)]
+    struct Proc {
+        id: SigningActor,
+        gen: Generation,
+        pending_gen: Generation,
+        members: BTreeSet<Actor>,
+        votes: BTreeMap<Actor, Vote>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    enum Reconfig {
+        Join(Actor),
+        Leave(Actor),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    enum Ballot {
+        Propose(Reconfig),
+        Merge(BTreeSet<Vote>),
+        Quorum(BTreeSet<Vote>),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    struct Vote {
+        gen: Generation,
+        ballot: Ballot,
+        voter: Actor,
+        sig: Sig,
+    }
+
+    impl Vote {
+        fn is_quorum(&self) -> bool {
+            match self.ballot {
+                Ballot::Quorum(_) => true,
+                _ => false,
+            }
+        }
+
+        fn round(&self) -> usize {
+            match &self.ballot {
+                Ballot::Propose(_) => 1,
+                Ballot::Merge(votes) | Ballot::Quorum(votes) => {
+                    assert!(!votes.is_empty());
+                    votes.iter().map(|v| v.round()).max().unwrap() + 1
+                }
+            }
+        }
+
+        fn reconfigs(&self) -> BTreeSet<(Actor, Reconfig)> {
+            match &self.ballot {
+                Ballot::Propose(reconfig) => {
+                    vec![(self.voter, reconfig.clone())].into_iter().collect()
+                }
+                Ballot::Merge(votes) | Ballot::Quorum(votes) => {
+                    votes.iter().flat_map(|v| v.reconfigs()).collect()
+                }
+            }
+        }
+
+        fn has_seen(&self, vote: &Vote) -> bool {
+            if self == vote {
+                true
+            } else {
+                match &self.ballot {
+                    Ballot::Propose(_) => false,
+                    Ballot::Merge(votes) | Ballot::Quorum(votes) => {
+                        votes.iter().any(|v| v.has_seen(vote))
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Packet {
+        vote: Vote,
+        source: Actor,
+        dest: Actor,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Error {
+        InvalidSignature,
+        WrongDestination {
+            dest: Actor,
+            actor: Actor,
+        },
+        ReconfigInProgress {
+            gen: Generation,
+            pending_gen: Generation,
+        },
+        MembersAtCapacity {
+            members: BTreeSet<Actor>,
+        },
+        JoinRequestForExistingMember {
+            requester: Actor,
+            members: BTreeSet<Actor>,
+        },
+        LeaveRequestForNonMember {
+            requester: Actor,
+            members: BTreeSet<Actor>,
+        },
+        VoteNotForThisGeneration {
+            vote_gen: Generation,
+            gen: Generation,
+            pending_gen: Generation,
+        },
+        VoteFromNonMember {
+            voter: Actor,
+            members: BTreeSet<Actor>,
+        },
+        VoterChangedMind {
+            reconfigs: BTreeSet<(Actor, Reconfig)>,
+        },
+        ExistingVoteFromVoterIsNotPresentInNewVote,
+    }
+
+    impl Proc {
+        pub fn trust(&mut self, actor: Actor) {
+            self.members.insert(actor);
+        }
+
+        pub fn reconfig(&mut self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
+            self.adopt_ballot(self.gen + 1, Ballot::Propose(reconfig))
+        }
+
+        pub fn adopt_ballot(
+            &mut self,
+            gen: Generation,
+            ballot: Ballot,
+        ) -> Result<Vec<Packet>, Error> {
+            self.ensure_no_reconfig_in_progress()?;
+
+            assert!(self.gen == gen || self.gen + 1 == gen);
+
+            let sig = self.id.sign((&ballot, &gen));
+            let voter = self.id.actor();
+            let vote = Vote {
+                ballot,
+                gen,
+                voter,
+                sig,
+            };
+
+            self.validate_vote(&vote)?;
+
+            self.pending_gen = gen;
+
+            self.votes.insert(self.id.actor(), vote.clone());
+
+            Ok(self.broadcast(vote))
+        }
+
+        pub fn handle_packet(&mut self, packet: Packet) -> Result<Vec<Packet>, Error> {
+            self.validate_packet(&packet)?;
+            let Packet { vote, .. } = packet;
+
+            if self.pending_gen + 1 == vote.gen {
+                assert_eq!(self.votes, Default::default());
+                // A gen change has begun but this is the first we're hearing of it. Adopt the vote (if we agree with it)
+                self.votes.insert(vote.voter, vote.clone());
+                self.adopt_ballot(vote.gen, vote.ballot.clone())
+            } else if self.pending_gen == vote.gen {
+                // This is a vote from the current generation change
+                assert_eq!(self.gen + 1, self.pending_gen);
+
+                // we must have voted to be in this state
+                assert!(self.votes.contains_key(&self.id.actor()));
+
+                self.votes.insert(vote.voter, vote);
+
+                if self.is_split_vote() {
+                    // We've detected that we can't form quorum
+                    self.adopt_ballot(
+                        self.pending_gen,
+                        Ballot::Merge(self.votes.values().cloned().collect()),
+                    )
+                } else if self.is_quorum() {
+                    // we have quorum.. but over what?
+                    if self.is_quorum_over_quorums() {
+                        // The network has come to agreement, apply the reconfigs.
+                        for reconfig in self.resolve_votes() {
+                            self.apply(reconfig);
+                        }
+                        Ok(vec![])
+                    } else {
+                        self.adopt_ballot(
+                            self.pending_gen,
+                            Ballot::Quorum(self.votes.values().cloned().collect()),
+                        )
+                    }
+                } else {
+                    // still waiting for more votes
+                    Ok(vec![])
+                }
+            } else {
+                panic!("Not Implemented");
+            }
+        }
+
+        fn apply(&mut self, reconfig: Reconfig) {
+            match reconfig {
+                Reconfig::Join(peer) => self.members.insert(peer),
+                Reconfig::Leave(peer) => self.members.remove(&peer),
+            };
+        }
+
+        fn count_votes(&self) -> BTreeMap<BTreeSet<Reconfig>, usize> {
+            let round = self
+                .votes
+                .values()
+                .map(|v| v.round())
+                .max()
+                .unwrap_or_default();
+
+            let mut count: BTreeMap<BTreeSet<Reconfig>, usize> = Default::default();
+
+            for vote in self.votes.values().filter(|v| v.round() == round) {
+                let c = count
+                    .entry(
+                        vote.reconfigs()
+                            .into_iter()
+                            .map(|(_, reconfig)| reconfig)
+                            .collect(),
+                    )
+                    .or_default();
+                *c += 1;
+            }
+
+            count
+        }
+
+        fn is_split_vote(&self) -> bool {
+            let counts = self.count_votes();
+            let total_votes: usize = counts.values().sum();
+            let most_votes = counts.values().max().cloned().unwrap_or_default();
+            let n = self.members.len();
+            let outstanding_votes = n - total_votes;
+            let predicted_votes = most_votes + outstanding_votes;
+
+            3 * total_votes > 2 * n && 3 * predicted_votes <= 2 * n
+        }
+
+        fn is_quorum(&self) -> bool {
+            let most_votes = self
+                .count_votes()
+                .values()
+                .max()
+                .cloned()
+                .unwrap_or_default();
+            let n = self.members.len();
+
+            3 * most_votes > 2 * n
+        }
+
+        fn is_quorum_over_quorums(&self) -> bool {
+            let winning_reconfigs = self.resolve_votes();
+
+            let count_of_quorums = self
+                .votes
+                .values()
+                .filter(|v| {
+                    v.reconfigs()
+                        .into_iter()
+                        .map(|(_, r)| r)
+                        .collect::<BTreeSet<_>>()
+                        == winning_reconfigs
+                })
+                .filter(|v| v.is_quorum())
+                .count();
+
+            3 * count_of_quorums > 2 * self.members.len()
+        }
+
+        fn resolve_votes(&self) -> BTreeSet<Reconfig> {
+            let (winning_reconfigs, _) = self
+                .count_votes()
+                .into_iter()
+                .max_by(|a, b| (a.1).cmp(&b.1))
+                .unwrap_or_default();
+
+            winning_reconfigs
+        }
+
+        fn ensure_no_reconfig_in_progress(&self) -> Result<(), Error> {
+            if self.gen != self.pending_gen {
+                Err(Error::ReconfigInProgress {
+                    gen: self.gen,
+                    pending_gen: self.pending_gen,
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn validate_packet(&self, packet: &Packet) -> Result<(), Error> {
+            let Packet { source, dest, vote } = packet;
+
+            if dest != &self.id.actor() {
+                Err(Error::WrongDestination {
+                    dest: *dest,
+                    actor: self.id.actor(),
+                })
+            } else if *source != vote.voter {
+                panic!(
+                    "Packet source different from voter, not sure if this is allowed {:#?}",
+                    packet
+                );
+            } else {
+                self.validate_vote(vote)
+            }
+        }
+
+        fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
+            if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig) {
+                Err(Error::InvalidSignature)
+            } else if !self.members.contains(&vote.voter) {
+                Err(Error::VoteFromNonMember {
+                    voter: vote.voter,
+                    members: self.members.clone(),
+                })
+            } else if self.votes.contains_key(&vote.voter)
+                && !vote.has_seen(&self.votes[&vote.voter])
+            {
+                Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote)
+            } else if vote.gen == self.gen + 1 && self.pending_gen == self.gen {
+                // We are starting a vote for the next generation
+                assert_eq!(self.votes, Default::default()); // we should not have any votes yet
+                self.validate_ballot(vote.gen, &vote.ballot)
+            } else if self.pending_gen == self.gen + 1 && vote.gen == self.pending_gen {
+                // This is a vote for this generation
+                assert_ne!(self.votes, Default::default(), "{:?} {:#?}", vote, self); // we should have at least one vote
+
+                // Ensure that nobody is trying to change their reconfig's.
+                let reconfigs: BTreeSet<(Actor, Reconfig)> = self
+                    .votes
+                    .values()
+                    .flat_map(|v| v.reconfigs())
+                    .chain(vote.reconfigs())
+                    .collect();
+
+                let voters: BTreeSet<Actor> = reconfigs.iter().map(|(actor, _)| *actor).collect();
+                if voters.len() != reconfigs.len() {
+                    assert!(voters.len() > reconfigs.len());
+                    Err(Error::VoterChangedMind { reconfigs })
+                } else {
+                    self.validate_ballot(vote.gen, &vote.ballot)
+                }
+            } else if vote.gen <= self.gen || vote.gen > self.pending_gen {
+                Err(Error::VoteNotForThisGeneration {
+                    vote_gen: vote.gen,
+                    gen: self.gen,
+                    pending_gen: self.pending_gen,
+                })
+            } else {
+                panic!("Unhandled case {:?} {:#?}", vote, self);
+            }
+        }
+
+        fn validate_ballot(&self, gen: Generation, ballot: &Ballot) -> Result<(), Error> {
+            match ballot {
+                Ballot::Propose(reconfig) => self.validate_reconfig(&reconfig),
+                Ballot::Merge(_votes) => panic!("validate(Merge) not implemented"),
+                Ballot::Quorum(_votes) => panic!("validate(Quorum) not implemented"),
+            }
+        }
+
+        fn validate_reconfig(&self, reconfig: &Reconfig) -> Result<(), Error> {
+            match reconfig {
+                Reconfig::Join(actor) => {
+                    if self.members.contains(&actor) {
+                        Err(Error::JoinRequestForExistingMember {
+                            requester: *actor,
+                            members: self.members.clone(),
+                        })
+                    } else if self.members.len() >= SOFT_MAX_MEMBERS {
+                        Err(Error::MembersAtCapacity {
+                            members: self.members.clone(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+                Reconfig::Leave(actor) => {
+                    if !self.members.contains(&actor) {
+                        Err(Error::LeaveRequestForNonMember {
+                            requester: *actor,
+                            members: self.members.clone(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        }
+
+        fn broadcast(&self, vote: Vote) -> Vec<Packet> {
+            self.members
+                .iter()
+                .cloned()
+                .map(|member| Packet {
+                    vote: vote.clone(),
+                    source: self.id.actor(),
+                    dest: member,
+                })
+                .collect()
+        }
+    }
 
     #[test]
     fn test_reject_new_reconfig_if_one_in_progress() {
@@ -627,8 +638,9 @@ mod tests {
         }
 
         fn drain_queued_packets(&mut self) {
-            while let Some(source) = self.packets.keys().next() {
-                self.deliver_packet_from_source(*source);
+            while self.packets.len() > 0 {
+                let source = self.packets.keys().next().unwrap().clone();
+                self.deliver_packet_from_source(source);
             }
         }
     }
@@ -699,7 +711,7 @@ mod tests {
             assert!(quorum(procs_by_gen[max_gen].len(), n as usize));
 
             // And procs at each generation should have agreement on members
-            for (gen, procs) in procs_by_gen {
+            for (_, procs) in procs_by_gen {
                 let mut proc_iter = procs.iter();
                 let first = proc_iter.next().unwrap();
                 for proc in proc_iter {
