@@ -224,6 +224,8 @@ mod tests {
 
                         self.apply(reconfig);
                     }
+
+                    self.gen = self.pending_gen;
                     return Ok(join_confirmation_packets);
                 } else {
                     println!("[DSB] Detected quorum");
@@ -706,8 +708,6 @@ mod tests {
                     panic!("Unexpected err: {:?} {:#?}", err, self);
                 }
             }
-
-            println!("After delivering: {:#?}", self);
         }
 
         fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
@@ -719,7 +719,6 @@ mod tests {
         fn drain_queued_packets(&mut self) {
             while self.packets.len() > 0 {
                 let source = self.packets.keys().next().unwrap().clone();
-                println!("Delivering from {:?}, {:#?}", source, self);
                 self.deliver_packet_from_source(source);
             }
         }
@@ -753,7 +752,6 @@ mod tests {
 
 
             for instruction in instructions {
-                println!("{:#?}", net);
                 match instruction {
                     (0, source_idx, _) => {
                         // deliver packet
@@ -778,6 +776,12 @@ mod tests {
                             Err(Error::VoteFromNonMember { .. }) => {
                                 assert!(!q.members.contains(&q.id.actor()));
                             }
+                            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { vote, existing_vote }) => {
+                                // This proc has already committed to a vote this round
+                                assert_ne!(vote, existing_vote);
+                                assert_eq!(q.votes.get(&q.id.actor()), Some(&existing_vote));
+                                assert_eq!(vote.ballot, Ballot::Propose(reconfig));
+                            }
                             Err(err) => {
                                 // invalid request.
                                 panic!("Failure to reconfig is not handled yet: {:?}", err);
@@ -801,22 +805,23 @@ mod tests {
 
             let max_gen = procs_by_gen.keys().last().unwrap();
 
-            // The last gen should have at least a quorum of nodes
-            assert!(quorum(procs_by_gen[max_gen].len(), n as usize));
 
             // And procs at each generation should have agreement on members
-            for (_, procs) in procs_by_gen {
+            for (gen, procs) in procs_by_gen.iter() {
                 let mut proc_iter = procs.iter();
                 let first = proc_iter.next().unwrap();
                 for proc in proc_iter {
-                    assert_eq!(first.members, proc.members);
+                    assert_eq!(first.members, proc.members, "gen: {}", gen);
                 }
             }
 
-            assert_eq!(net.pending_reconfigs, Default::default());
+            // The last gen should have at least a quorum of nodes
+            assert!(quorum(procs_by_gen[max_gen].len(), procs_by_gen[max_gen].iter().next().unwrap().members.len()));
+
+            // assert_eq!(net.pending_reconfigs, Default::default());
 
             // ensure all procs are in the same generations
-            // ensure all procs agree on the same
+            // ensure all procs agree on the same members
             TestResult::passed()
         }
 
