@@ -782,14 +782,10 @@ mod tests {
             }
 
 
-            for instruction in instructions {
+            for mut instruction in instructions {
+                instruction.0 = instruction.0.min(2);
                 match instruction {
-                    (0, source_idx, _) => {
-                        // deliver packet
-                        let source = net.procs[source_idx.min(n -1) as usize].id.actor();
-                        net.deliver_packet_from_source(source);
-                    }
-                    (1, p_idx, q_idx) => {
+                    (0, p_idx, q_idx) => {
                         // p requests to join q
                         let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
                         let reconfig = Reconfig::Join(p);
@@ -819,7 +815,7 @@ mod tests {
                             }
                         }
                     }
-                    (2, p_idx, q_idx) => {
+                    (1, p_idx, q_idx) => {
                         // p requests to leave q
                         let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
                         let reconfig = Reconfig::Leave(p);
@@ -838,7 +834,7 @@ mod tests {
                                 assert!(!q.members.contains(&q.id.actor()));
                             }
                             Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { vote, existing_vote }) => {
-                                // This proc has already committed to a vote this round
+                                // This proc has already committed to a vote
                                 assert_ne!(vote, existing_vote);
                                 assert_eq!(q.votes.get(&q.id.actor()), Some(&existing_vote));
                                 assert_eq!(vote.ballot, Ballot::Propose(reconfig));
@@ -848,6 +844,11 @@ mod tests {
                                 panic!("Leave Failure is not handled yet: {:?}", err);
                             }
                         }
+                    }
+                    (2, source_idx, _) => {
+                        // deliver packet
+                        let source = net.procs[source_idx.min(n -1) as usize].id.actor();
+                        net.deliver_packet_from_source(source);
                     }
                     _ => {}
                 }
@@ -865,7 +866,6 @@ mod tests {
             }
 
             let max_gen = procs_by_gen.keys().last().unwrap();
-
 
             // And procs at each generation should have agreement on members
             for (gen, procs) in procs_by_gen.iter() {
