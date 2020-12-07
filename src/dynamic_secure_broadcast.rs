@@ -640,7 +640,8 @@ mod tests {
     #[derive(Default, Debug)]
     struct Net {
         procs: Vec<Proc>,
-        pending_reconfigs: BTreeSet<Reconfig>,
+        reconfigs_by_gen: BTreeMap<Generation, BTreeSet<Reconfig>>,
+        members_at_gen: BTreeMap<Generation, BTreeSet<Actor>>,
         packets: BTreeMap<Actor, Vec<Packet>>,
     }
 
@@ -664,6 +665,8 @@ mod tests {
             } else {
                 return;
             };
+
+            let dest = packet.dest;
 
             assert_eq!(packet.source, source);
 
@@ -717,6 +720,20 @@ mod tests {
                     panic!("Unexpected err: {:?} {:#?}", err, self);
                 }
             }
+
+            let (mut proc_members, gen) = self
+                .procs
+                .iter()
+                .find(|p| p.id.actor() == dest)
+                .map(|p| (p.members.clone(), p.gen))
+                .unwrap();
+
+            let expected_members_at_gen = self
+                .members_at_gen
+                .entry(gen)
+                .or_insert(proc_members.clone());
+
+            assert_eq!(expected_members_at_gen, &mut proc_members);
         }
 
         fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
@@ -775,7 +792,7 @@ mod tests {
                         let q = &mut net.procs[q_idx.min(n - 1) as usize];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
-                                net.pending_reconfigs.insert(reconfig);
+                                net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
                                 assert!(reconfig_packets.iter().all(|p| p.source == q.id.actor()));
                                 net.queue_packets(reconfig_packets);
                             }
@@ -819,9 +836,39 @@ mod tests {
             for (gen, procs) in procs_by_gen.iter() {
                 let mut proc_iter = procs.iter();
                 let first = proc_iter.next().unwrap();
+                if *gen > 0 {
+                    // TODO: remove this gen > 0 constraint
+                    assert_eq!(first.members, net.members_at_gen[&gen]);
+                }
                 for proc in proc_iter {
                     assert_eq!(first.members, proc.members, "gen: {}", gen);
                 }
+            }
+
+            // TODO: everyone that a proc at G considers a member is also at generation G
+
+            for (gen, reconfigs) in net.reconfigs_by_gen.iter() {
+                let members_at_prev_gen = net.members_at_gen[&(gen - 1)].clone();
+                let members_at_curr_gen = net.members_at_gen[&gen].clone();
+                let mut reconfigs_applied: BTreeSet<&Reconfig> = Default::default();
+                for reconfig in reconfigs {
+                    match reconfig {
+                        Reconfig::Join(p) => {
+                            assert!(!members_at_prev_gen.contains(&p));
+                            if members_at_curr_gen.contains(&p) {
+                                reconfigs_applied.insert(reconfig);
+                            }
+                        }
+                        Reconfig::Leave(p) => {
+                            assert!(members_at_prev_gen.contains(&p));
+                            if !members_at_curr_gen.contains(&p) {
+                                reconfigs_applied.insert(reconfig);
+                            }
+                        }
+                    }
+                }
+
+                assert_ne!(reconfigs_applied, Default::default());
             }
 
             // The last gen should have at least a quorum of nodes
