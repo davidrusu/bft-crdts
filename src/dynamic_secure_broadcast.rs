@@ -209,11 +209,6 @@ mod tests {
                     })
                     .collect();
 
-                if joined_procs.contains(&self.id.actor()) {
-                    // We just joined the network, we can stop here.
-                    return Ok(vec![]);
-                }
-
                 let ballot = Ballot::Quorum(self.votes.values().cloned().collect());
                 let gen = self.pending_gen;
                 let sig = self.id.sign((&ballot, &gen));
@@ -224,12 +219,18 @@ mod tests {
                     voter,
                     sig,
                 };
-                self.log_vote(&vote);
+
+                self.votes = Default::default();
+                if joined_procs.contains(&self.id.actor()) {
+                    // We just joined the network, we can stop here.
+                    return Ok(vec![]);
+                }
 
                 let join_confirmation_packets = joined_procs
                     .into_iter()
                     .map(|p| self.send(vote.clone(), p))
                     .collect();
+
                 return Ok(join_confirmation_packets);
             }
 
@@ -858,6 +859,11 @@ mod tests {
             println!("--  [DRAINING]  --");
             net.drain_queued_packets();
             println!("{:#?}", net);
+
+            // We should have no more pending votes.
+            for p in net.procs.iter() {
+                assert_eq!(p.votes, Default::default());
+            }
 
             let mut procs_by_gen: BTreeMap<Generation, Vec<Proc>> = Default::default();
 
