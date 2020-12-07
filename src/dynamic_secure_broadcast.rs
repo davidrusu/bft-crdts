@@ -279,11 +279,9 @@ mod tests {
         }
 
         fn count_votes(&self, votes: &BTreeSet<Vote>) -> BTreeMap<BTreeSet<Reconfig>, usize> {
-            let round = votes.iter().map(|v| v.round()).max().unwrap_or_default();
-
             let mut count: BTreeMap<BTreeSet<Reconfig>, usize> = Default::default();
 
-            for vote in votes.iter().filter(|v| v.round() == round) {
+            for vote in votes.iter() {
                 let c = count
                     .entry(
                         vote.reconfigs()
