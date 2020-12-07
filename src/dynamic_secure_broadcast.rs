@@ -191,49 +191,54 @@ mod tests {
                 );
             }
 
-            if self.is_quorum(&self.votes.values().cloned().collect()) {
-                if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
-                    println!("[DSB] Detected quorum over quorum");
-                    // The network has come to agreement, apply the reconfigs.
-                    let mut join_confirmation_packets = vec![];
-                    let agreed_upon_reconfigs =
-                        self.resolve_votes(&self.votes.values().cloned().collect());
-                    for reconfig in agreed_upon_reconfigs {
-                        if self.members.contains(&self.id.actor()) {
-                            if let Reconfig::Join(new_actor) = reconfig {
-                                println!("[handle_packet] letting the joining process {:?} know that it has been accepted", new_actor);
-                                let ballot = Ballot::Quorum(self.votes.values().cloned().collect());
-                                let gen = self.pending_gen;
-                                let sig = self.id.sign((&ballot, &gen));
-                                let voter = self.id.actor();
-                                let vote = Vote {
-                                    ballot,
-                                    gen,
-                                    voter,
-                                    sig,
-                                };
+            if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
+                println!("[DSB] Detected quorum over quorum");
+                let agreed_upon_reconfigs =
+                    self.resolve_votes(&self.votes.values().cloned().collect());
+                for reconfig in agreed_upon_reconfigs.iter().cloned() {
+                    self.apply(reconfig);
+                }
+                self.gen = vote.gen;
+                self.pending_gen = vote.gen;
 
-                                self.log_vote(&vote);
+                let joined_procs: BTreeSet<Actor> = agreed_upon_reconfigs
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Reconfig::Join(p) => Some(p),
+                        Reconfig::Leave(_) => None,
+                    })
+                    .collect();
 
-                                // TODO: since the joining process was not part of the vote, it will still be at the previous generation.
-                                //      on receiving this quorum, it should automatically advance itself to the current members
-                                // let the joining process know that it is now considered a member of the network.
-                                join_confirmation_packets.push(self.send(vote, new_actor));
-                            }
-                        }
+                if joined_procs.contains(&self.id.actor()) {
+                    // We just joined the network, we can stop here.
+                    return Ok(vec![]);
+                }
 
-                        self.apply(reconfig);
-                    }
-
-                    self.gen = self.pending_gen;
-                    return Ok(join_confirmation_packets);
-                } else {
-                    println!("[DSB] Detected quorum");
-                    return self.adopt_ballot(
-                        self.pending_gen,
-                        Ballot::Quorum(self.votes.values().cloned().collect()),
-                    );
+                let ballot = Ballot::Quorum(self.votes.values().cloned().collect());
+                let gen = self.pending_gen;
+                let sig = self.id.sign((&ballot, &gen));
+                let voter = self.id.actor();
+                let vote = Vote {
+                    ballot,
+                    gen,
+                    voter,
+                    sig,
                 };
+                self.log_vote(&vote);
+
+                let join_confirmation_packets = joined_procs
+                    .into_iter()
+                    .map(|p| self.send(vote.clone(), p))
+                    .collect();
+                return Ok(join_confirmation_packets);
+            }
+
+            if self.is_quorum(&self.votes.values().cloned().collect()) {
+                println!("[DSB] Detected quorum");
+                return self.adopt_ballot(
+                    self.pending_gen,
+                    Ballot::Quorum(self.votes.values().cloned().collect()),
+                );
             }
 
             // We have determined that we don't yet have enough votes to take action.
