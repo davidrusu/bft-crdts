@@ -17,19 +17,39 @@ mod tests {
         pending_gen: Generation,
         members: BTreeSet<Actor>,
         votes: BTreeMap<Actor, Vote>,
+        faulty: bool,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
     enum Reconfig {
         Join(Actor),
         Leave(Actor),
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    impl std::fmt::Debug for Reconfig {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Reconfig::Join(a) => write!(f, "J{:?}", a),
+                Reconfig::Leave(a) => write!(f, "L{:?}", a),
+            }
+        }
+    }
+
+    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
     enum Ballot {
         Propose(Reconfig),
         Merge(BTreeSet<Vote>),
         Quorum(BTreeSet<Vote>),
+    }
+
+    impl std::fmt::Debug for Ballot {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Ballot::Propose(r) => write!(f, "P({:?})", r),
+                Ballot::Merge(votes) => write!(f, "M({:?})", votes),
+                Ballot::Quorum(votes) => write!(f, "Q({:?})", votes),
+            }
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -48,13 +68,10 @@ mod tests {
             }
         }
 
-        fn round(&self) -> usize {
-            match &self.ballot {
-                Ballot::Propose(_) => 1,
-                Ballot::Merge(votes) | Ballot::Quorum(votes) => {
-                    assert!(!votes.is_empty());
-                    votes.iter().map(|v| v.round()).max().unwrap() + 1
-                }
+        fn is_propose(&self) -> bool {
+            match self.ballot {
+                Ballot::Propose(_) => true,
+                _ => false,
             }
         }
 
@@ -124,10 +141,6 @@ mod tests {
             vote: Vote,
             existing_vote: Vote,
         },
-        OldVoteReplayed {
-            vote: Vote,
-            existing_vote: Vote,
-        },
         QuorumBallotIsNotQuorum {
             ballot: Ballot,
             members: BTreeSet<Actor>,
@@ -177,18 +190,46 @@ mod tests {
                     "[handle_packet] vote from pending_gen {:?}->{:?}",
                     self.gen, vote.gen
                 );
-                self.pending_gen = vote.gen
+                self.pending_gen = vote.gen;
             }
 
             assert_eq!(self.gen + 1, self.pending_gen);
 
+            if let Some(our_vote) = self.votes.get(&self.id.actor()) {
+                if our_vote.supersedes(&vote) && self.members.len() > 1 {
+                    // We don't need to process this vote since
+                    println!("[handle_packet] We've seen this vote before, dropping");
+                    return Ok(vec![]);
+                }
+            }
+
             if self.is_split_vote(&self.votes.values().cloned().collect()) {
                 println!("[DSB] Detected split vote");
                 // We've detected that we can't form quorum
-                return self.adopt_ballot(
-                    self.pending_gen,
-                    Ballot::Merge(self.votes.values().cloned().collect()),
-                );
+
+                if let Some(our_vote) = self.votes.get(&self.id.actor()) {
+                    // did we already vote with a quorum?
+                    if our_vote.ballot == vote.ballot {
+                        println!("[DSB] our ballot is the same as their ballot, waiting for more votes...");
+                        // This ballot is the same as ours, wait for more ballots to come in.
+                        return Ok(vec![]);
+                    } else if vote.supersedes(our_vote) {
+                        println!("[DSB] their vote supercedes ours, adopting.");
+                        // They have seen our quorum vote, but have decided to supersede it
+                        return self.adopt_ballot(self.pending_gen, vote.ballot.clone());
+                    } else {
+                        println!("[DSB] Our votes are not comparable, merging");
+                        return self.adopt_ballot(
+                            self.pending_gen,
+                            Ballot::Merge(self.votes.values().cloned().collect()),
+                        );
+                    }
+                } else {
+                    return self.adopt_ballot(
+                        self.pending_gen,
+                        Ballot::Merge(self.votes.values().cloned().collect()),
+                    );
+                }
             }
 
             if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
@@ -236,10 +277,47 @@ mod tests {
 
             if self.is_quorum(&self.votes.values().cloned().collect()) {
                 println!("[DSB] Detected quorum");
-                return self.adopt_ballot(
-                    self.pending_gen,
-                    Ballot::Quorum(self.votes.values().cloned().collect()),
-                );
+                if let Some(our_vote) = self.votes.get(&self.id.actor()) {
+                    // did we already vote with a quorum?
+                    let vote_reconfigs: BTreeSet<_> =
+                        vote.reconfigs().into_iter().map(|(_, r)| r).collect();
+                    let reconfigs_we_have_comitted_to_not_in_quorum = our_vote
+                        .reconfigs()
+                        .into_iter()
+                        .filter(|(_, r)| !vote_reconfigs.contains(r))
+                        .count();
+
+                    if reconfigs_we_have_comitted_to_not_in_quorum > 0 {
+                        println!("[DSB] We have committed to reconfigs that the quorum has not seen, wait for split of Q/Q");
+                        return Ok(vec![]);
+                    } else if our_vote.is_quorum() {
+                        println!(
+                            "[DSB] We've already sent a quorum, wait till we either split or Q/Q"
+                        );
+                        // we may form a quorum over quorums.
+                        return Ok(vec![]);
+                    } else if vote.is_quorum() && vote.supersedes(&our_vote) {
+                        println!("[DSB] Adopting their quorum");
+                        return self.adopt_ballot(self.pending_gen, vote.ballot.clone());
+                    } else if vote.ballot != our_vote.ballot && vote.supersedes(our_vote) {
+                        panic!("[DSB] their vote supercedes our vote!!");
+                    } else {
+                        println!("[DSB] ");
+                        return self.adopt_ballot(
+                            self.pending_gen,
+                            Ballot::Quorum(self.votes.values().cloned().collect()),
+                        );
+                    }
+                } else if vote.is_quorum() {
+                    println!("[DSB] Adopting their quorum");
+                    // They have seen our quorum vote, but have decided to supersede it
+                    return self.adopt_ballot(self.pending_gen, vote.ballot.clone());
+                } else {
+                    return self.adopt_ballot(
+                        self.pending_gen,
+                        Ballot::Quorum(self.votes.values().cloned().collect()),
+                    );
+                }
             }
 
             // We have determined that we don't yet have enough votes to take action.
@@ -512,6 +590,7 @@ mod tests {
     #[test]
     fn test_reject_vote_from_non_member() {
         let mut net = Net::with_procs(2);
+        net.procs[1].faulty = true;
         let p0 = net.procs[0].id.actor();
         let p1 = net.procs[1].id.actor();
         net.trust(p1, p0);
@@ -653,6 +732,41 @@ mod tests {
         assert_eq!(resp, Err(Error::InvalidSignature));
     }
 
+    #[test]
+    fn test_split_vote() {
+        for nprocs in 1..7 {
+            let mut net = Net::with_procs(nprocs * 2);
+            for i in 0..nprocs {
+                let i_actor = net.procs[i].id.actor();
+                for j in 0..(nprocs * 2) {
+                    net.procs[j].trust(i_actor);
+                }
+            }
+
+            let joining_members: Vec<Actor> =
+                net.procs[nprocs..].iter().map(|p| p.id.actor()).collect();
+            for i in 0..nprocs {
+                let member = joining_members[i];
+                let packets = net.procs[i].reconfig(Reconfig::Join(member)).unwrap();
+                net.queue_packets(packets);
+            }
+
+            net.drain_queued_packets();
+
+            let expected_members = net.procs[0].members.clone();
+            assert!(expected_members.len() > nprocs);
+
+            for i in 0..nprocs {
+                assert_eq!(net.procs[i].members, expected_members);
+            }
+
+            for member in expected_members.iter() {
+                let p = net.procs.iter().find(|p| &p.id.actor() == member).unwrap();
+                assert_eq!(p.members, expected_members);
+            }
+        }
+    }
+
     #[derive(Default, Debug)]
     struct Net {
         procs: Vec<Proc>,
@@ -733,23 +847,21 @@ mod tests {
                     assert_eq!(dest_proc.pending_gen, pending_gen);
                 }
                 Err(err) => {
-                    panic!("Unexpected err: {:?} {:#?}", err, self);
+                    panic!("Unexpected err: {:?} {:?}", err, self);
                 }
             }
 
-            let (mut proc_members, gen) = self
-                .procs
-                .iter()
-                .find(|p| p.id.actor() == dest)
-                .map(|p| (p.members.clone(), p.gen))
-                .unwrap();
+            let proc = self.procs.iter().find(|p| p.id.actor() == dest).unwrap();
+            if !proc.faulty {
+                let (mut proc_members, gen) = (proc.members.clone(), proc.gen);
 
-            let expected_members_at_gen = self
-                .members_at_gen
-                .entry(gen)
-                .or_insert(proc_members.clone());
+                let expected_members_at_gen = self
+                    .members_at_gen
+                    .entry(gen)
+                    .or_insert(proc_members.clone());
 
-            assert_eq!(expected_members_at_gen, &mut proc_members);
+                assert_eq!(expected_members_at_gen, &mut proc_members);
+            }
         }
 
         fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
