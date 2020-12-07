@@ -814,6 +814,36 @@ mod tests {
                             }
                         }
                     }
+                    (2, p_idx, q_idx) => {
+                        // p requests to leave q
+                        let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
+                        let reconfig = Reconfig::Leave(p);
+
+                        let q = &mut net.procs[q_idx.min(n - 1) as usize];
+                        match q.reconfig(reconfig.clone()) {
+                            Ok(reconfig_packets) => {
+                                net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
+                                assert!(reconfig_packets.iter().all(|p| p.source == q.id.actor()));
+                                net.queue_packets(reconfig_packets);
+                            }
+                            Err(Error::LeaveRequestForNonMember { .. }) => {
+                                assert!(!q.members.contains(&p));
+                            }
+                            Err(Error::VoteFromNonMember { .. }) => {
+                                assert!(!q.members.contains(&q.id.actor()));
+                            }
+                            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { vote, existing_vote }) => {
+                                // This proc has already committed to a vote this round
+                                assert_ne!(vote, existing_vote);
+                                assert_eq!(q.votes.get(&q.id.actor()), Some(&existing_vote));
+                                assert_eq!(vote.ballot, Ballot::Propose(reconfig));
+                            }
+                            Err(err) => {
+                                // invalid request.
+                                panic!("Leave Failure is not handled yet: {:?}", err);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
