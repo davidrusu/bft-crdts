@@ -704,6 +704,15 @@ mod tests {
                     assert_eq!(members, dest_members.clone());
                     assert!(!dest_members.contains(&source));
                 }
+                Err(Error::VoteNotForThisGeneration {
+                    vote_gen,
+                    gen,
+                    pending_gen,
+                }) => {
+                    assert!(vote_gen <= gen || vote_gen > pending_gen);
+                    assert_eq!(dest_proc.gen, gen);
+                    assert_eq!(dest_proc.pending_gen, pending_gen);
+                }
                 Err(err) => {
                     panic!("Unexpected err: {:?} {:#?}", err, self);
                 }
