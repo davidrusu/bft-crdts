@@ -162,7 +162,7 @@ mod tests {
             self.validate_vote(&vote)?;
 
             self.pending_gen = gen;
-            self.votes.insert(self.id.actor(), vote.clone());
+            self.log_vote(&vote);
             Ok(self.broadcast(vote))
         }
 
@@ -170,61 +170,81 @@ mod tests {
             self.validate_packet(&packet)?;
             let Packet { vote, .. } = packet;
 
-            if self.votes.contains_key(&vote.voter)
-                && &self.votes[&vote.voter] != &vote
-                && self.votes[&vote.voter].supersedes(&vote)
-            {
-                // We've already seen this vote, drop it.
-                let existing_vote = self.votes[&vote.voter].clone();
-                Err(Error::OldVoteReplayed {
-                    vote,
-                    existing_vote,
-                })
-            } else if self.pending_gen + 1 == vote.gen {
-                assert_eq!(self.votes, Default::default());
-                // A gen change has begun but this is the first we're hearing of it. Adopt the vote (if we agree with it)
-                self.votes.insert(vote.voter, vote.clone());
-                self.adopt_ballot(vote.gen, vote.ballot.clone())
-            } else if self.pending_gen == vote.gen {
-                // This is a vote from the current generation change
-                assert_eq!(self.gen + 1, self.pending_gen);
+            self.log_vote(&vote);
 
-                // we must have voted to be in this state
-                assert!(self.votes.contains_key(&self.id.actor()));
-
-                self.votes.insert(vote.voter, vote);
-
-                if self.is_split_vote(&self.votes.values().cloned().collect()) {
-                    println!("[DSB] Detected split vote");
-                    // We've detected that we can't form quorum
-                    self.adopt_ballot(
-                        self.pending_gen,
-                        Ballot::Merge(self.votes.values().cloned().collect()),
-                    )
-                } else if self.is_quorum(&self.votes.values().cloned().collect()) {
-                    // we have quorum.. but over what?
-                    if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
-                        println!("[DSB] Detected quorum over quorum");
-                        // The network has come to agreement, apply the reconfigs.
-                        for reconfig in self.resolve_votes(&self.votes.values().cloned().collect())
-                        {
-                            self.apply(reconfig);
-                        }
-                        Ok(vec![])
-                    } else {
-                        println!("[DSB] Detected quorum");
-                        self.adopt_ballot(
-                            self.pending_gen,
-                            Ballot::Quorum(self.votes.values().cloned().collect()),
-                        )
-                    }
-                } else {
-                    // still waiting for more votes
-                    Ok(vec![])
-                }
-            } else {
-                panic!("Not Implemented");
+            if self.gen == self.pending_gen && self.pending_gen + 1 == vote.gen {
+                println!(
+                    "[handle_packet] vote from pending_gen {:?}->{:?}",
+                    self.gen, vote.gen
+                );
+                self.pending_gen = vote.gen
             }
+
+            assert_eq!(self.gen + 1, self.pending_gen);
+
+            if self.is_split_vote(&self.votes.values().cloned().collect()) {
+                println!("[DSB] Detected split vote");
+                // We've detected that we can't form quorum
+                return self.adopt_ballot(
+                    self.pending_gen,
+                    Ballot::Merge(self.votes.values().cloned().collect()),
+                );
+            }
+
+            if self.is_quorum(&self.votes.values().cloned().collect()) {
+                if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
+                    println!("[DSB] Detected quorum over quorum");
+                    // The network has come to agreement, apply the reconfigs.
+                    let mut join_confirmation_packets = vec![];
+                    let agreed_upon_reconfigs =
+                        self.resolve_votes(&self.votes.values().cloned().collect());
+                    for reconfig in agreed_upon_reconfigs {
+                        if self.members.contains(&self.id.actor()) {
+                            if let Reconfig::Join(new_actor) = reconfig {
+                                println!("[handle_packet] letting the joining process {:?} know that it has been accepted", new_actor);
+                                let ballot = Ballot::Quorum(self.votes.values().cloned().collect());
+                                let gen = self.pending_gen;
+                                let sig = self.id.sign((&ballot, &gen));
+                                let voter = self.id.actor();
+                                let vote = Vote {
+                                    ballot,
+                                    gen,
+                                    voter,
+                                    sig,
+                                };
+
+                                self.log_vote(&vote);
+
+                                // TODO: since the joining process was not part of the vote, it will still be at the previous generation.
+                                //      on receiving this quorum, it should automatically advance itself to the current members
+                                // let the joining process know that it is now considered a member of the network.
+                                join_confirmation_packets.push(self.send(vote, new_actor));
+                            }
+                        }
+
+                        self.apply(reconfig);
+                    }
+                    return Ok(join_confirmation_packets);
+                } else {
+                    println!("[DSB] Detected quorum");
+                    return self.adopt_ballot(
+                        self.pending_gen,
+                        Ballot::Quorum(self.votes.values().cloned().collect()),
+                    );
+                };
+            }
+
+            // We have determined that we don't yet have enough votes to take action.
+            // If we have not yet voted, this is where we would contribute our vote
+            if !self.votes.contains_key(&self.id.actor()) {
+                // vote with all pending reconfigs
+                return self.adopt_ballot(
+                    self.pending_gen,
+                    Ballot::Merge(self.votes.values().cloned().collect()),
+                );
+            }
+
+            Ok(vec![])
         }
 
         fn apply(&mut self, reconfig: Reconfig) {
@@ -232,6 +252,22 @@ mod tests {
                 Reconfig::Join(peer) => self.members.insert(peer),
                 Reconfig::Leave(peer) => self.members.remove(&peer),
             };
+        }
+
+        fn log_vote(&mut self, vote: &Vote) {
+            let existing_vote = self.votes.entry(vote.voter).or_insert_with(|| vote.clone());
+            if vote.supersedes(&existing_vote) {
+                *existing_vote = vote.clone()
+            }
+
+            match &vote.ballot {
+                Ballot::Propose(_) => (),
+                Ballot::Quorum(votes) | Ballot::Merge(votes) => {
+                    for vote in votes.iter() {
+                        self.log_vote(vote);
+                    }
+                }
+            }
         }
 
         fn count_votes(&self, votes: &BTreeSet<Vote>) -> BTreeMap<BTreeSet<Reconfig>, usize> {
@@ -266,6 +302,7 @@ mod tests {
         }
 
         fn is_quorum(&self, votes: &BTreeSet<Vote>) -> bool {
+            // TODO: quorum should always just be the largest 7 members
             let most_votes = self
                 .count_votes(votes)
                 .values()
@@ -433,12 +470,13 @@ mod tests {
             self.members
                 .iter()
                 .cloned()
-                .map(|member| Packet {
-                    vote: vote.clone(),
-                    source: self.id.actor(),
-                    dest: member,
-                })
+                .map(|member| self.send(vote.clone(), member))
                 .collect()
+        }
+
+        fn send(&self, vote: Vote, dest: Actor) -> Packet {
+            let source = self.id.actor();
+            Packet { vote, source, dest }
         }
     }
 
@@ -600,7 +638,6 @@ mod tests {
     #[derive(Default, Debug)]
     struct Net {
         procs: Vec<Proc>,
-        expected_members: BTreeMap<Actor, BTreeSet<Actor>>,
         pending_reconfigs: BTreeSet<Reconfig>,
         packets: BTreeMap<Actor, Vec<Packet>>,
     }
@@ -626,6 +663,13 @@ mod tests {
                 return;
             };
 
+            assert_eq!(packet.source, source);
+
+            println!(
+                "delivering {:?}->{:?} {:#?}",
+                packet.source, packet.dest, packet
+            );
+
             self.packets = self
                 .packets
                 .clone()
@@ -641,7 +685,7 @@ mod tests {
                 .find(|p| p.id.actor() == packet.dest)
                 .unwrap();
 
-            let dest_members = self.expected_members.entry(packet.dest).or_default();
+            let dest_members = dest_proc.members.clone();
             match dest_proc.handle_packet(packet) {
                 Ok(resp_packets) => {
                     // A process only accepts a packet if it considers the sender a member
@@ -654,7 +698,7 @@ mod tests {
                     self.queue_packets(resp_packets);
                 }
                 Err(Error::VoteFromNonMember { voter, members }) => {
-                    assert_eq!(voter, source);
+                    assert_eq!(voter, source, "{:?} not in {:?}", voter, members);
                     assert_eq!(members, dest_members.clone());
                     assert!(!dest_members.contains(&source));
                 }
@@ -662,6 +706,8 @@ mod tests {
                     panic!("Unexpected err: {:?} {:#?}", err, self);
                 }
             }
+
+            println!("After delivering: {:#?}", self);
         }
 
         fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
@@ -681,7 +727,6 @@ mod tests {
         fn trust(&mut self, p: Actor, q: Actor) {
             if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
                 proc.trust(q);
-                self.expected_members.entry(p).or_default().insert(q);
             }
         }
     }
@@ -704,7 +749,6 @@ mod tests {
             let gen_proc = net.genesis();
             for proc in net.procs.iter_mut() {
                 proc.trust(gen_proc);
-                net.expected_members.entry(proc.id.actor()).or_default().insert(gen_proc);
             }
 
 
@@ -729,10 +773,10 @@ mod tests {
                                 net.queue_packets(reconfig_packets);
                             }
                             Err(Error::JoinRequestForExistingMember { .. }) => {
-                                assert!(net.expected_members[&q.id.actor()].contains(&p));
+                                assert!(q.members.contains(&p));
                             }
                             Err(Error::VoteFromNonMember { .. }) => {
-                                assert!(!net.expected_members[&q.id.actor()].contains(&q.id.actor()));
+                                assert!(!q.members.contains(&q.id.actor()));
                             }
                             Err(err) => {
                                 // invalid request.
