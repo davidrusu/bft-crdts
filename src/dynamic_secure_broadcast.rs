@@ -421,7 +421,19 @@ mod tests {
         fn validate_ballot(&self, gen: Generation, ballot: &Ballot) -> Result<(), Error> {
             match ballot {
                 Ballot::Propose(reconfig) => self.validate_reconfig(&reconfig),
-                Ballot::Merge(_votes) => panic!("validate(Merge) not implemented"),
+                Ballot::Merge(votes) => {
+                    for vote in votes.iter() {
+                        if vote.gen != gen {
+                            return Err(Error::VoteNotForThisGeneration {
+                                vote_gen: vote.gen,
+                                gen: gen,
+                                pending_gen: gen,
+                            });
+                        }
+                        self.validate_vote(vote)?;
+                    }
+                    Ok(())
+                }
                 Ballot::Quorum(votes) => {
                     if !self.is_quorum(votes) {
                         Err(Error::QuorumBallotIsNotQuorum {
