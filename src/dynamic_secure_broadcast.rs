@@ -2,7 +2,7 @@
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use crdts::quickcheck::{quickcheck, TestResult};
+    use crdts::quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use serde::Serialize;
 
     use crate::actor::{Actor, Sig, SigningActor};
@@ -772,13 +772,68 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    enum Instruction {
+        RequestJoin(usize, usize),
+        RequestLeave(usize, usize),
+        DeliverPacketFromSource(usize),
+    }
+    impl Arbitrary for Instruction {
+        fn arbitrary<G: Gen>(g: &mut G) -> Self {
+            let p: usize = usize::arbitrary(g) % 7;
+            let q: usize = usize::arbitrary(g) % 7;
+
+            match u8::arbitrary(g) % 3 {
+                0 => Instruction::RequestJoin(p, q),
+                1 => Instruction::RequestLeave(p, q),
+                2 => Instruction::DeliverPacketFromSource(p),
+                i => panic!("unexpected instruction index {}", i),
+            }
+        }
+
+        fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+            let mut shrunk_ops = Vec::new();
+            match self.clone() {
+                Instruction::RequestJoin(p, q) => {
+                    if p > 0 && q > 0 {
+                        shrunk_ops.push(Instruction::RequestJoin(p - 1, q - 1));
+                    }
+                    if p > 0 {
+                        shrunk_ops.push(Instruction::RequestJoin(p - 1, q));
+                    }
+                    if q > 0 {
+                        shrunk_ops.push(Instruction::RequestJoin(p, q - 1));
+                    }
+                }
+                Instruction::RequestLeave(p, q) => {
+                    if p > 0 && q > 0 {
+                        shrunk_ops.push(Instruction::RequestLeave(p - 1, q - 1));
+                    }
+                    if p > 0 {
+                        shrunk_ops.push(Instruction::RequestLeave(p - 1, q));
+                    }
+                    if q > 0 {
+                        shrunk_ops.push(Instruction::RequestLeave(p, q - 1));
+                    }
+                }
+                Instruction::DeliverPacketFromSource(p) => {
+                    if p > 0 {
+                        shrunk_ops.push(Instruction::DeliverPacketFromSource(p - 1));
+                    }
+                }
+            }
+
+            Box::new(shrunk_ops.into_iter())
+        }
+    }
+
     quickcheck! {
-        fn prop_interpreter(n: u8, instructions: Vec<(u8, u8, u8)>) -> TestResult {
+        fn prop_interpreter(n: u8, instructions: Vec<Instruction>) -> TestResult {
             fn quorum(m: usize, n: usize) -> bool {
                 3 * m > 2 * n
             }
-
-            if n == 0 || n > 7 {
+            let n = n.max(7);
+            if n == 0 || instructions.len() > 12{
                 return TestResult::discard();
             }
 
@@ -793,15 +848,14 @@ mod tests {
             }
 
 
-            for mut instruction in instructions {
-                instruction.0 = instruction.0.min(2);
+            for instruction in instructions {
                 match instruction {
-                    (0, p_idx, q_idx) => {
+                    Instruction::RequestJoin(p_idx, q_idx) => {
                         // p requests to join q
-                        let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
+                        let p = net.procs[p_idx.min((n - 1) as usize)].id.actor();
                         let reconfig = Reconfig::Join(p);
 
-                        let q = &mut net.procs[q_idx.min(n - 1) as usize];
+                        let q = &mut net.procs[q_idx.min((n - 1) as usize)];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
@@ -825,13 +879,13 @@ mod tests {
                                 panic!("Failure to reconfig is not handled yet: {:?}", err);
                             }
                         }
-                    }
-                    (1, p_idx, q_idx) => {
+                    },
+                    Instruction::RequestLeave(p_idx, q_idx) => {
                         // p requests to leave q
-                        let p = net.procs[p_idx.min(n - 1) as usize].id.actor();
+                        let p = net.procs[p_idx.min((n - 1) as usize)].id.actor();
                         let reconfig = Reconfig::Leave(p);
 
-                        let q = &mut net.procs[q_idx.min(n - 1) as usize];
+                        let q = &mut net.procs[q_idx.min((n - 1) as usize)];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
@@ -855,13 +909,12 @@ mod tests {
                                 panic!("Leave Failure is not handled yet: {:?}", err);
                             }
                         }
-                    }
-                    (2, source_idx, _) => {
+                    },
+                    Instruction::DeliverPacketFromSource(source_idx) => {
                         // deliver packet
-                        let source = net.procs[source_idx.min(n -1) as usize].id.actor();
+                        let source = net.procs[source_idx.min((n -1) as usize)].id.actor();
                         net.deliver_packet_from_source(source);
                     }
-                    _ => {}
                 }
             }
 
