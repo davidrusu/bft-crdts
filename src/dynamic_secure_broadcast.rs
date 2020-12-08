@@ -456,6 +456,14 @@ mod tests {
         fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
             if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig) {
                 Err(Error::InvalidSignature)
+            } else if vote.gen <= self.gen
+                || (self.pending_gen > self.gen && vote.gen > self.pending_gen)
+            {
+                Err(Error::VoteNotForThisGeneration {
+                    vote_gen: vote.gen,
+                    gen: self.gen,
+                    pending_gen: self.pending_gen,
+                })
             } else if !self.members.contains(&vote.voter) {
                 Err(Error::VoteFromNonMember {
                     voter: vote.voter,
@@ -492,12 +500,6 @@ mod tests {
                 } else {
                     self.validate_ballot(vote.gen, &vote.ballot)
                 }
-            } else if vote.gen <= self.gen || vote.gen > self.pending_gen {
-                Err(Error::VoteNotForThisGeneration {
-                    vote_gen: vote.gen,
-                    gen: self.gen,
-                    pending_gen: self.pending_gen,
-                })
             } else {
                 panic!("Unhandled case {:?} {:#?}", vote, self);
             }
@@ -983,7 +985,7 @@ mod tests {
     }
 
     quickcheck! {
-        fn prop_interpreter(n: u8, instructions: Vec<Instruction>) -> TestResult {
+        fn prop_interpreter(n: usize, instructions: Vec<Instruction>) -> TestResult {
             fn quorum(m: usize, n: usize) -> bool {
                 3 * m > 2 * n
             }
@@ -994,7 +996,7 @@ mod tests {
 
             println!("--------------------------------------");
 
-            let mut net = Net::with_procs(n as usize);
+            let mut net = Net::with_procs(n);
 
             // Assume procs[0] is the genesis proc. (trusts itself)
             let gen_proc = net.genesis();
@@ -1007,10 +1009,10 @@ mod tests {
                 match instruction {
                     Instruction::RequestJoin(p_idx, q_idx) => {
                         // p requests to join q
-                        let p = net.procs[p_idx.min((n - 1) as usize)].id.actor();
+                        let p = net.procs[p_idx.min(n - 1)].id.actor();
                         let reconfig = Reconfig::Join(p);
 
-                        let q = &mut net.procs[q_idx.min((n - 1) as usize)];
+                        let q = &mut net.procs[q_idx.min(n - 1)];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
@@ -1037,10 +1039,10 @@ mod tests {
                     },
                     Instruction::RequestLeave(p_idx, q_idx) => {
                         // p requests to leave q
-                        let p = net.procs[p_idx.min((n - 1) as usize)].id.actor();
+                        let p = net.procs[p_idx.min(n - 1)].id.actor();
                         let reconfig = Reconfig::Leave(p);
 
-                        let q = &mut net.procs[q_idx.min((n - 1) as usize)];
+                        let q = &mut net.procs[q_idx.min(n - 1)];
                         match q.reconfig(reconfig.clone()) {
                             Ok(reconfig_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
@@ -1067,7 +1069,7 @@ mod tests {
                     },
                     Instruction::DeliverPacketFromSource(source_idx) => {
                         // deliver packet
-                        let source = net.procs[source_idx.min((n -1) as usize)].id.actor();
+                        let source = net.procs[source_idx.min(n - 1)].id.actor();
                         net.deliver_packet_from_source(source);
                     }
                 }
