@@ -512,71 +512,57 @@ impl Proc {
                     }
                     Ok(())
                 }
-                Ballot::Quorum(votes) => {
-                    if !self.is_quorum(votes) {
-                        Err(Error::QuorumBallotIsNotQuorum {
-                            ballot: ballot.clone(),
-                            members: self.members.clone(),
-                        })
-                    } else {
-                        for vote in votes.iter() {
-                            if vote.gen != gen {
-                                return Err(Error::VoteNotForThisGeneration {
-                                    vote_gen: vote.gen,
-                                    gen: gen,
-                                    pending_gen: gen,
-                                });
-                            }
-                            self.validate_vote(vote)?;
-                        }
-                        Ok(())
-                    }
-                }
             }
-        }
-
-        fn validate_reconfig(&self, reconfig: &Reconfig) -> Result<(), Error> {
-            match reconfig {
-                Reconfig::Join(actor) => {
-                    if self.members.contains(&actor) {
-                        Err(Error::JoinRequestForExistingMember {
-                            requester: *actor,
-                            members: self.members.clone(),
-                        })
-                    } else if self.members.len() >= SOFT_MAX_MEMBERS {
-                        Err(Error::MembersAtCapacity {
-                            members: self.members.clone(),
-                        })
-                    } else {
-                        Ok(())
-                    }
-                }
-                Reconfig::Leave(actor) => {
-                    if !self.members.contains(&actor) {
-                        Err(Error::LeaveRequestForNonMember {
-                            requester: *actor,
-                            members: self.members.clone(),
-                        })
-                    } else {
-                        Ok(())
-                    }
-                }
-            }
-        }
-
-        fn broadcast(&self, vote: Vote) -> Vec<Packet> {
-            self.members
-                .iter()
-                .cloned()
-                .map(|member| self.send(vote.clone(), member))
-                .collect()
-        }
-
-        fn send(&self, vote: Vote, dest: Actor) -> Packet {
-            let source = self.id.actor();
-            Packet { vote, source, dest }
         }
     }
+
+    fn validate_reconfig(&self, reconfig: &Reconfig) -> Result<(), Error> {
+        match reconfig {
+            Reconfig::Join(actor) => {
+                if self.members.contains(&actor) {
+                    Err(Error::JoinRequestForExistingMember {
+                        requester: *actor,
+                        members: self.members.clone(),
+                    })
+                } else if self.members.len() >= SOFT_MAX_MEMBERS {
+                    Err(Error::MembersAtCapacity {
+                        members: self.members.clone(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            Reconfig::Leave(actor) => {
+                if !self.members.contains(&actor) {
+                    Err(Error::LeaveRequestForNonMember {
+                        requester: *actor,
+                        members: self.members.clone(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn broadcast(&self, vote: Vote) -> Vec<Packet> {
+        self.members
+            .iter()
+            .cloned()
+            .map(|member| self.send(vote.clone(), member))
+            .collect()
+    }
+
+    fn send(&self, vote: Vote, dest: Actor) -> Packet {
+        let source = self.id.actor();
+        Packet { vote, source, dest }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crdts::quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 
     #[test]
     fn test_reject_changing_reconfig_when_one_is_in_progress() {
