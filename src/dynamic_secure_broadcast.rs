@@ -16,6 +16,7 @@ mod tests {
         gen: Generation,
         pending_gen: Generation,
         members: BTreeSet<Actor>,
+        history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving quorum
         votes: BTreeMap<Actor, Vote>,
         faulty: bool,
     }
@@ -46,18 +47,24 @@ mod tests {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Ballot::Propose(r) => write!(f, "P({:?})", r),
-                Ballot::Merge(votes) => write!(f, "M({:?})", votes),
-                Ballot::Quorum(votes) => write!(f, "Q({:?})", votes),
+                Ballot::Merge(votes) => write!(f, "M{:?}", votes),
+                Ballot::Quorum(votes) => write!(f, "Q{:?}", votes),
             }
         }
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
     struct Vote {
         gen: Generation,
         ballot: Ballot,
         voter: Actor,
         sig: Sig,
+    }
+
+    impl std::fmt::Debug for Vote {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "V(G{},{:?},{:?})", self.gen, self.ballot, self.voter)
+        }
     }
 
     impl Vote {
@@ -195,13 +202,13 @@ mod tests {
 
             assert_eq!(self.gen + 1, self.pending_gen);
 
-            if let Some(our_vote) = self.votes.get(&self.id.actor()) {
-                if our_vote.supersedes(&vote) && self.members.len() > 1 {
-                    // We don't need to process this vote since
-                    println!("[handle_packet] We've seen this vote before, dropping");
-                    return Ok(vec![]);
-                }
-            }
+            // if let Some(our_vote) = self.votes.get(&self.id.actor()) {
+            //     if our_vote.supersedes(&vote) && self.members.len() > 1 {
+            //         // We don't need to process this vote since
+            //         println!("[handle_packet] We've seen this vote before, dropping");
+            //         return Ok(vec![]);
+            //     }
+            // }
 
             if self.is_split_vote(&self.votes.values().cloned().collect()) {
                 println!("[DSB] Detected split vote");
@@ -239,16 +246,9 @@ mod tests {
                 for reconfig in agreed_upon_reconfigs.iter().cloned() {
                     self.apply(reconfig);
                 }
-                self.gen = vote.gen;
-                self.pending_gen = vote.gen;
-
-                let joined_procs: BTreeSet<Actor> = agreed_upon_reconfigs
-                    .into_iter()
-                    .filter_map(|r| match r {
-                        Reconfig::Join(p) => Some(p),
-                        Reconfig::Leave(_) => None,
-                    })
-                    .collect();
+                assert_eq!(self.gen + 1, self.pending_gen);
+                assert_eq!(self.pending_gen, vote.gen);
+                self.gen = self.pending_gen;
 
                 let ballot = Ballot::Quorum(self.votes.values().cloned().collect());
                 let gen = self.pending_gen;
@@ -261,18 +261,30 @@ mod tests {
                     sig,
                 };
 
-                self.votes = Default::default();
-                if joined_procs.contains(&self.id.actor()) {
-                    // We just joined the network, we can stop here.
-                    return Ok(vec![]);
-                }
+                self.history.insert(self.gen, vote.clone());
 
-                let join_confirmation_packets = joined_procs
+                let new_procs: BTreeSet<Actor> = agreed_upon_reconfigs
                     .into_iter()
-                    .map(|p| self.send(vote.clone(), p))
+                    .filter_map(|r| match r {
+                        Reconfig::Join(p) => Some(p),
+                        Reconfig::Leave(_) => None,
+                    })
                     .collect();
 
-                return Ok(join_confirmation_packets);
+                // clear our pending votes
+                self.votes = Default::default();
+
+                let onboarding_packets = new_procs
+                    .into_iter()
+                    .flat_map(|p| {
+                        self.history
+                            .iter()
+                            .map(|(_gen, membership_proof)| self.send(membership_proof.clone(), p))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                return Ok(onboarding_packets);
             }
 
             if self.is_quorum(&self.votes.values().cloned().collect()) {
@@ -324,10 +336,7 @@ mod tests {
             // If we have not yet voted, this is where we would contribute our vote
             if !self.votes.contains_key(&self.id.actor()) {
                 // vote with all pending reconfigs
-                return self.adopt_ballot(
-                    self.pending_gen,
-                    Ballot::Merge(self.votes.values().cloned().collect()),
-                );
+                return self.adopt_ballot(self.pending_gen, vote.ballot.clone());
             }
 
             Ok(vec![])
@@ -767,6 +776,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_onboarding_across_many_generations() {
+        let mut net = Net::with_procs(3);
+        let p0 = net.procs[0].id.actor();
+        let p1 = net.procs[1].id.actor();
+        let p2 = net.procs[2].id.actor();
+
+        for i in 0..3 {
+            net.procs[i].trust(p0);
+        }
+        let packets = net.procs[0].reconfig(Reconfig::Join(p1)).unwrap();
+        net.queue_packets(packets);
+        net.deliver_packet_from_source(net.genesis());
+        net.deliver_packet_from_source(net.genesis());
+        let packets = net.procs[0].reconfig(Reconfig::Join(p2)).unwrap();
+        net.queue_packets(packets);
+        net.drain_queued_packets();
+
+        let mut procs_by_gen: BTreeMap<Generation, Vec<Proc>> = Default::default();
+
+        for proc in net.procs {
+            procs_by_gen.entry(proc.gen).or_default().push(proc);
+        }
+
+        let max_gen = procs_by_gen.keys().last().unwrap();
+        // The last gen should have at least a quorum of nodes
+        let current_members: BTreeSet<_> =
+            procs_by_gen[max_gen].iter().map(|p| p.id.actor()).collect();
+
+        for proc in procs_by_gen[max_gen].iter() {
+            assert_eq!(current_members, proc.members);
+        }
+    }
+
     #[derive(Default, Debug)]
     struct Net {
         procs: Vec<Proc>,
@@ -944,7 +987,7 @@ mod tests {
             fn quorum(m: usize, n: usize) -> bool {
                 3 * m > 2 * n
             }
-            let n = n.max(7);
+            let n = n.min(7);
             if n == 0 || instructions.len() > 12{
                 return TestResult::discard();
             }
@@ -1088,7 +1131,15 @@ mod tests {
             }
 
             // The last gen should have at least a quorum of nodes
-            assert!(quorum(procs_by_gen[max_gen].len(), procs_by_gen[max_gen].iter().next().unwrap().members.len()));
+                    // The last gen should have at least a quorum of nodes
+            // let current_members: BTreeSet<_> =
+            //     procs_by_gen[max_gen].iter().map(|p| p.id.actor()).collect();
+
+            // for proc in procs_by_gen[max_gen].iter() {
+            //     assert_eq!(current_members, proc.members);
+            // }
+
+            assert!(quorum(procs_by_gen[max_gen].len(), procs_by_gen[max_gen].iter().next().unwrap().members.len()), "{:?}", procs_by_gen);
 
             // assert_eq!(net.pending_reconfigs, Default::default());
 
