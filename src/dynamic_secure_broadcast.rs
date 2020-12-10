@@ -296,23 +296,17 @@ impl Proc {
                 } else if vote.ballot != our_vote.ballot && vote.supersedes(our_vote) {
                     // This case is not expected to happen
                     panic!("[DSB] their vote supercedes our vote!!");
-                } else {
-                    println!("[DSB] broadcasting quorum");
-                    return self.cast_ballot(
-                        self.pending_gen,
-                        Ballot::Quorum(self.votes.values().cloned().collect()).simplify(),
-                    );
                 }
             } else if vote.is_quorum_ballot() {
                 println!("[DSB] Adopting their quorum");
                 return self.cast_ballot(self.pending_gen, vote.ballot.clone());
-            } else {
-                println!("[DSB] broadcasting quorum");
-                return self.cast_ballot(
-                    self.pending_gen,
-                    Ballot::Quorum(self.votes.values().cloned().collect()).simplify(),
-                );
             }
+
+            println!("[DSB] broadcasting quorum");
+            return self.cast_ballot(
+                self.pending_gen,
+                Ballot::Quorum(self.votes.values().cloned().collect()).simplify(),
+            );
         }
 
         // We have determined that we don't yet have enough votes to take action.
@@ -380,13 +374,13 @@ impl Proc {
 
     fn is_split_vote(&self, votes: &BTreeSet<Vote>) -> bool {
         let counts = self.count_votes(votes);
-        let total_votes: usize = counts.values().sum();
+        let votes_received: usize = counts.values().sum();
         let most_votes = counts.values().max().cloned().unwrap_or_default();
         let n = self.members.len();
-        let outstanding_votes = n - total_votes;
+        let outstanding_votes = n - votes_received;
         let predicted_votes = most_votes + outstanding_votes;
 
-        3 * total_votes > 2 * n && 3 * predicted_votes <= 2 * n
+        3 * votes_received > 2 * n && 3 * predicted_votes <= 2 * n
     }
 
     fn is_quorum(&self, votes: &BTreeSet<Vote>) -> bool {
