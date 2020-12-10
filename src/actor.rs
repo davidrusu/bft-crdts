@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use ed25519::{Keypair, Signer, Verifier, PublicKey, Signature};
+use ed25519::{Keypair, PublicKey, Signature, Signer, Verifier};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ impl Actor {
 
 impl Default for Actor {
     fn default() -> Self {
-	SigningActor::default().actor()
+        SigningActor::default().actor()
     }
 }
 
@@ -59,7 +59,6 @@ impl fmt::Debug for Actor {
     }
 }
 
-
 pub struct SigningActor(pub Keypair);
 
 impl Default for SigningActor {
@@ -70,7 +69,7 @@ impl Default for SigningActor {
 
 impl SigningActor {
     pub fn actor(&self) -> Actor {
-	Actor(self.0.public)
+        Actor(self.0.public)
     }
 
     pub fn sign(&self, blob: impl Serialize) -> Sig {
@@ -82,7 +81,7 @@ impl SigningActor {
 
 impl fmt::Display for SigningActor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-	fmt::Display::fmt(&self.actor(), f)
+        fmt::Display::fmt(&self.actor(), f)
     }
 }
 
