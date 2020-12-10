@@ -198,11 +198,18 @@ impl Proc {
         if self.is_split_vote(&self.votes.values().cloned().collect()) {
             println!("[DSB] Detected split vote");
             if let Some(our_vote) = self.votes.get(&self.id.actor()) {
-                if our_vote.ballot == vote.ballot || our_vote.supersedes(&vote) {
-                    println!("[DSB] we've seen their vote already, waiting for more votes...");
+                let reconfigs_we_voted_for =
+                    self.resolve_votes(&our_vote.unpack_votes().into_iter().cloned().collect());
+
+                let reconfigs_they_voted_for =
+                    self.resolve_votes(&vote.unpack_votes().into_iter().cloned().collect());
+
+                if reconfigs_we_voted_for == reconfigs_they_voted_for || our_vote.supersedes(&vote)
+                {
+                    println!("[DSB] Either they've voted the same as us or we've seen their vote already, waiting for more votes...");
                     return Ok(vec![]);
                 } else if vote.supersedes(our_vote) {
-                    println!("[DSB] their vote supercedes ours, adopting.");
+                    println!("[DSB] Their vote supersedes ours, adopting.");
                     return self.cast_ballot(self.pending_gen, vote.ballot.clone());
                 }
             }
@@ -225,36 +232,35 @@ impl Proc {
 
             // log a proof of what the network decided on so that we can onboard future procs.
             let ballot = Ballot::Quorum(self.votes.values().cloned().collect()).simplify();
-            let gen = self.pending_gen;
-            let sig = self.id.sign((&ballot, &gen));
-            let voter = self.id.actor();
             let vote = Vote {
+                voter: self.id.actor(),
+                sig: self.id.sign((&ballot, &self.gen)),
+                gen: self.gen,
                 ballot,
-                gen,
-                voter,
-                sig,
             };
             self.history.insert(self.gen, vote.clone());
-
-            // figure out which procs we need to onboard
-            let new_procs: BTreeSet<Actor> = agreed_upon_reconfigs
-                .into_iter()
-                .filter_map(|r| match r {
-                    Reconfig::Join(p) => Some(p),
-                    Reconfig::Leave(_) => None,
-                })
-                .collect();
 
             // clear our pending votes
             self.votes = Default::default();
 
             if existing_member {
+                // We were a voting member during this generation change. Onboard the newly joined members.
+
+                // Figure out which procs we need to onboard.
+                let new_procs: BTreeSet<Actor> = agreed_upon_reconfigs
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Reconfig::Join(p) => Some(p),
+                        Reconfig::Leave(_) => None,
+                    })
+                    .collect();
+
                 let onboarding_packets = new_procs
                     .into_iter()
                     .flat_map(|p| {
                         // deliver the history in order from gen=1 onwards
                         self.history
-                            .iter()
+                            .iter() // history is a BTreeSet, .iter() is ordered by generation
                             .map(|(_gen, membership_proof)| self.send(membership_proof.clone(), p))
                             .collect::<Vec<_>>()
                     })
@@ -268,34 +274,35 @@ impl Proc {
 
         if self.is_quorum(&self.votes.values().cloned().collect()) {
             println!("[DSB] Detected quorum");
-            if let Some(our_vote) = self.votes.get(&self.id.actor()) {
-                // did we already vote with a quorum?
 
-                // We may have committed to some reconfigs that is not part of quorum.
-                // This happens when the network was able to form quorum without our involvement.
-                // We can not change our vote because right now all we know is that a subset of
-                // the network saw quorum. It could still be the case that two subsets of the network
-                // see different quorums, this case is resolved by the split vote detection.
-                let vote_reconfigs: BTreeSet<_> =
-                    vote.reconfigs().into_iter().map(|(_, r)| r).collect();
-                let reconfigs_we_have_comitted_to_not_in_quorum = our_vote
+            if let Some(our_vote) = self.votes.get(&self.id.actor()) {
+                // We voted during this generation.
+
+                // We may have committed to some reconfigs that is not part of this quorum.
+                // This happens when the network was able to form quorum without our vote.
+                // We can not change our vote since all we know is that a subset of the network saw
+                // quorum. It could still be the case that two disjoint subsets of the network
+                // see different quorums, this case will be resolved by the split vote detection
+                // as more packets are delivered.
+
+                let quorum_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
+
+                let we_have_comitted_to_reconfigs_not_in_quorum = our_vote
                     .reconfigs()
                     .into_iter()
-                    .filter(|(_, r)| !vote_reconfigs.contains(r))
-                    .count();
+                    .filter(|(_, r)| !quorum_reconfigs.contains(r))
+                    .next()
+                    .is_some();
 
-                if reconfigs_we_have_comitted_to_not_in_quorum > 0 {
-                    println!("[DSB] We have committed to reconfigs that the quorum has not seen, wait for split or Q/Q");
+                if we_have_comitted_to_reconfigs_not_in_quorum {
+                    println!("[DSB] We have committed to reconfigs that the quorum has not seen, wait till we either have a split vote or Q/Q");
                     return Ok(vec![]);
                 } else if our_vote.is_quorum_ballot() {
-                    println!("[DSB] We've already sent a quorum, wait till we either split or Q/Q");
+                    println!("[DSB] We've already sent a quorum, wait till we either have a split vote or Q/Q");
                     return Ok(vec![]);
                 } else if vote.is_quorum_ballot() && vote.supersedes(&our_vote) {
                     println!("[DSB] Adopting their quorum");
                     return self.cast_ballot(self.pending_gen, vote.ballot.clone());
-                } else if vote.ballot != our_vote.ballot && vote.supersedes(our_vote) {
-                    // This case is not expected to happen
-                    panic!("[DSB] their vote supercedes our vote!!");
                 }
             } else if vote.is_quorum_ballot() {
                 println!("[DSB] Adopting their quorum");
@@ -322,13 +329,11 @@ impl Proc {
     fn cast_ballot(&mut self, gen: Generation, ballot: Ballot) -> Result<Vec<Packet>, Error> {
         assert!(self.gen == gen || self.gen + 1 == gen);
 
-        let sig = self.id.sign((&ballot, &gen));
-        let voter = self.id.actor();
         let vote = Vote {
+            voter: self.id.actor(),
+            sig: self.id.sign((&ballot, &gen)),
             ballot,
             gen,
-            voter,
-            sig,
         };
 
         self.validate_vote(&vote)?;
@@ -764,6 +769,9 @@ mod tests {
 
             net.drain_queued_packets();
 
+            let mut msc_file = File::create(format!("split_vote_{}.msc", nprocs)).unwrap();
+            msc_file.write_all(net.generate_msc().as_bytes()).unwrap();
+
             let expected_members = net.procs[0].members.clone();
             assert!(expected_members.len() > nprocs);
 
@@ -775,9 +783,6 @@ mod tests {
                 let p = net.procs.iter().find(|p| &p.id.actor() == member).unwrap();
                 assert_eq!(p.members, expected_members);
             }
-
-            let mut msc_file = File::create(format!("split_vote_{}.msc", nprocs)).unwrap();
-            msc_file.write_all(net.generate_msc().as_bytes()).unwrap()
         }
     }
 
@@ -807,6 +812,10 @@ mod tests {
                 }
             }
 
+            let mut msc_file =
+                File::create(format!("round_robin_split_vote_{}.msc", nprocs)).unwrap();
+            msc_file.write_all(net.generate_msc().as_bytes()).unwrap();
+
             let expected_members = net.procs[0].members.clone();
             assert!(expected_members.len() > nprocs);
 
@@ -818,10 +827,6 @@ mod tests {
                 let p = net.procs.iter().find(|p| &p.id.actor() == member).unwrap();
                 assert_eq!(p.members, expected_members);
             }
-
-            let mut msc_file =
-                File::create(format!("round_robin_split_vote_{}.msc", nprocs)).unwrap();
-            msc_file.write_all(net.generate_msc().as_bytes()).unwrap()
         }
     }
 
