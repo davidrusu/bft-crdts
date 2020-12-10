@@ -287,10 +287,10 @@ impl Proc {
 
                 let quorum_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
 
-                let we_have_comitted_to_reconfigs_not_in_quorum = our_vote
-                    .reconfigs()
+                let we_have_comitted_to_reconfigs_not_in_quorum = self
+                    .resolve_votes(&our_vote.unpack_votes().into_iter().cloned().collect())
                     .into_iter()
-                    .filter(|(_, r)| !quorum_reconfigs.contains(r))
+                    .filter(|r| !quorum_reconfigs.contains(r))
                     .next()
                     .is_some();
 
