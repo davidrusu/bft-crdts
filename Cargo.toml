@@ -17,7 +17,7 @@ serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
 cmdr = { git = "https://github.com/mendelt/cmdr", rev = "8407462be39bb932ec86eea1b36ce325f3034ccb" }
-tokio = { version = "~0.2.21", features = ["full"] }
+tokio = { version = "~0.2.22", features = ["full"] }
 qp2p = { git = "https://github.com/davidrusu/qp2p", branch = "drusu/fixes" }
 
 [profile.test]
