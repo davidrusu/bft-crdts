@@ -9,18 +9,18 @@ const SOFT_MAX_MEMBERS: usize = 7;
 type Generation = u64;
 
 #[derive(Debug, Default)]
-struct Proc {
-    id: SigningActor,
-    gen: Generation,
-    pending_gen: Generation,
-    members: BTreeSet<Actor>,
-    history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving quorum
-    votes: BTreeMap<Actor, Vote>,
-    faulty: bool,
+pub struct Proc {
+    pub id: SigningActor,
+    pub gen: Generation,
+    pub pending_gen: Generation,
+    pub members: BTreeSet<Actor>,
+    pub history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving quorum
+    pub votes: BTreeMap<Actor, Vote>,
+    pub faulty: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-enum Reconfig {
+pub enum Reconfig {
     Join(Actor),
     Leave(Actor),
 }
@@ -35,7 +35,7 @@ impl std::fmt::Debug for Reconfig {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-enum Ballot {
+pub enum Ballot {
     Propose(Reconfig),
     Merge(BTreeSet<Vote>),
     Quorum(BTreeSet<Vote>),
@@ -79,7 +79,7 @@ impl Ballot {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-struct Vote {
+pub struct Vote {
     gen: Generation,
     ballot: Ballot,
     voter: Actor,
@@ -130,14 +130,14 @@ impl Vote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Packet {
-    vote: Vote,
-    source: Actor,
-    dest: Actor,
+pub struct Packet {
+    pub vote: Vote,
+    pub source: Actor,
+    pub dest: Actor,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Error {
+pub enum Error {
     InvalidSignature,
     WrongDestination {
         dest: Actor,
@@ -587,6 +587,166 @@ impl Proc {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct Net {
+    pub procs: Vec<Proc>,
+    pub reconfigs_by_gen: BTreeMap<Generation, BTreeSet<Reconfig>>,
+    pub members_at_gen: BTreeMap<Generation, BTreeSet<Actor>>,
+    pub packets: BTreeMap<Actor, Vec<Packet>>,
+    pub delivered_packets: Vec<Packet>,
+}
+
+impl Net {
+    pub fn with_procs(n: usize) -> Self {
+        let mut procs: Vec<_> = (0..n).into_iter().map(|_| Proc::default()).collect();
+        procs.sort_by_key(|p| p.id.actor());
+        Self {
+            procs,
+            ..Default::default()
+        }
+    }
+
+    pub fn genesis(&self) -> Actor {
+        assert!(!self.procs.is_empty());
+        self.procs[0].id.actor()
+    }
+
+    pub fn deliver_packet_from_source(&mut self, source: Actor) {
+        let packet = if let Some(packets) = self.packets.get_mut(&source) {
+            assert!(packets.len() > 0);
+            packets.remove(0)
+        } else {
+            return;
+        };
+
+        let dest = packet.dest;
+
+        assert_eq!(packet.source, source);
+
+        println!(
+            "delivering {:?}->{:?} {:#?}",
+            packet.source, packet.dest, packet
+        );
+
+        self.delivered_packets.push(packet.clone());
+
+        self.packets = self
+            .packets
+            .clone()
+            .into_iter()
+            .filter(|(_, queue)| !queue.is_empty())
+            .collect();
+
+        assert_eq!(packet.source, source);
+
+        let dest_proc = self
+            .procs
+            .iter_mut()
+            .find(|p| p.id.actor() == packet.dest)
+            .unwrap();
+
+        let dest_members = dest_proc.members.clone();
+        match dest_proc.handle_packet(packet) {
+            Ok(resp_packets) => {
+                // A process only accepts a packet if it considers the sender a member
+                assert!(dest_members.contains(&source));
+
+                // TODO: inspect these packets
+                assert!(resp_packets
+                    .iter()
+                    .all(|p| p.source == dest_proc.id.actor()));
+                self.queue_packets(resp_packets);
+            }
+            Err(Error::VoteFromNonMember { voter, members }) => {
+                assert_eq!(voter, source, "{:?} not in {:?}", voter, members);
+                assert_eq!(members, dest_members.clone());
+                assert!(!dest_members.contains(&source));
+            }
+            Err(Error::VoteNotForThisGeneration {
+                vote_gen,
+                gen,
+                pending_gen,
+            }) => {
+                assert!(vote_gen <= gen || vote_gen > pending_gen);
+                assert_eq!(dest_proc.gen, gen);
+                assert_eq!(dest_proc.pending_gen, pending_gen);
+            }
+            Err(err) => {
+                panic!("Unexpected err: {:?} {:?}", err, self);
+            }
+        }
+
+        let proc = self.procs.iter().find(|p| p.id.actor() == dest).unwrap();
+        if !proc.faulty {
+            let (mut proc_members, gen) = (proc.members.clone(), proc.gen);
+
+            let expected_members_at_gen = self
+                .members_at_gen
+                .entry(gen)
+                .or_insert(proc_members.clone());
+
+            assert_eq!(expected_members_at_gen, &mut proc_members);
+        }
+    }
+
+    pub fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
+        for packet in packets {
+            self.packets.entry(packet.source).or_default().push(packet);
+        }
+    }
+
+    pub fn drain_queued_packets(&mut self) {
+        while self.packets.len() > 0 {
+            let source = self.packets.keys().next().unwrap().clone();
+            self.deliver_packet_from_source(source);
+        }
+    }
+
+    pub fn trust(&mut self, p: Actor, q: Actor) {
+        if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
+            proc.trust(q);
+        }
+    }
+
+    pub fn generate_msc(&self) -> String {
+        // See: http://www.mcternan.me.uk/mscgen/
+        let mut msc = String::from(
+            "
+msc {\n
+  hscale = \"2\";\n
+",
+        );
+        let procs = self
+            .procs
+            .iter()
+            .map(|p| p.id.actor())
+            .collect::<BTreeSet<_>>() // sort by actor id
+            .into_iter()
+            .map(|id| format!("{:?}", id))
+            .collect::<Vec<_>>()
+            .join(",");
+        msc.push_str(&procs);
+        msc.push_str(";\n");
+        for packet in self.delivered_packets.iter() {
+            msc.push_str(&format!(
+                "{}->{} [ label=\"{:?}\"];\n",
+                packet.source, packet.dest, packet.vote
+            ));
+        }
+
+        msc.push_str("}\n");
+
+        // Replace process identifiers with friendlier numbers
+        // 1, 2, 3 ... instead of i:3b2, i:7def, ...
+        for (idx, proc_id) in self.procs.iter().map(|p| p.id.actor()).enumerate() {
+            let proc_id_as_str = format!("{}", proc_id);
+            msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
+        }
+
+        msc
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,166 +1024,6 @@ mod tests {
 
         for proc in procs_by_gen[max_gen].iter() {
             assert_eq!(current_members, proc.members);
-        }
-    }
-
-    #[derive(Default, Debug)]
-    struct Net {
-        procs: Vec<Proc>,
-        reconfigs_by_gen: BTreeMap<Generation, BTreeSet<Reconfig>>,
-        members_at_gen: BTreeMap<Generation, BTreeSet<Actor>>,
-        packets: BTreeMap<Actor, Vec<Packet>>,
-        delivered_packets: Vec<Packet>,
-    }
-
-    impl Net {
-        fn with_procs(n: usize) -> Self {
-            let mut procs: Vec<_> = (0..n).into_iter().map(|_| Proc::default()).collect();
-            procs.sort_by_key(|p| p.id.actor());
-            Self {
-                procs,
-                ..Default::default()
-            }
-        }
-
-        fn genesis(&self) -> Actor {
-            assert!(!self.procs.is_empty());
-            self.procs[0].id.actor()
-        }
-
-        fn deliver_packet_from_source(&mut self, source: Actor) {
-            let packet = if let Some(packets) = self.packets.get_mut(&source) {
-                assert!(packets.len() > 0);
-                packets.remove(0)
-            } else {
-                return;
-            };
-
-            let dest = packet.dest;
-
-            assert_eq!(packet.source, source);
-
-            println!(
-                "delivering {:?}->{:?} {:#?}",
-                packet.source, packet.dest, packet
-            );
-
-            self.delivered_packets.push(packet.clone());
-
-            self.packets = self
-                .packets
-                .clone()
-                .into_iter()
-                .filter(|(_, queue)| !queue.is_empty())
-                .collect();
-
-            assert_eq!(packet.source, source);
-
-            let dest_proc = self
-                .procs
-                .iter_mut()
-                .find(|p| p.id.actor() == packet.dest)
-                .unwrap();
-
-            let dest_members = dest_proc.members.clone();
-            match dest_proc.handle_packet(packet) {
-                Ok(resp_packets) => {
-                    // A process only accepts a packet if it considers the sender a member
-                    assert!(dest_members.contains(&source));
-
-                    // TODO: inspect these packets
-                    assert!(resp_packets
-                        .iter()
-                        .all(|p| p.source == dest_proc.id.actor()));
-                    self.queue_packets(resp_packets);
-                }
-                Err(Error::VoteFromNonMember { voter, members }) => {
-                    assert_eq!(voter, source, "{:?} not in {:?}", voter, members);
-                    assert_eq!(members, dest_members.clone());
-                    assert!(!dest_members.contains(&source));
-                }
-                Err(Error::VoteNotForThisGeneration {
-                    vote_gen,
-                    gen,
-                    pending_gen,
-                }) => {
-                    assert!(vote_gen <= gen || vote_gen > pending_gen);
-                    assert_eq!(dest_proc.gen, gen);
-                    assert_eq!(dest_proc.pending_gen, pending_gen);
-                }
-                Err(err) => {
-                    panic!("Unexpected err: {:?} {:?}", err, self);
-                }
-            }
-
-            let proc = self.procs.iter().find(|p| p.id.actor() == dest).unwrap();
-            if !proc.faulty {
-                let (mut proc_members, gen) = (proc.members.clone(), proc.gen);
-
-                let expected_members_at_gen = self
-                    .members_at_gen
-                    .entry(gen)
-                    .or_insert(proc_members.clone());
-
-                assert_eq!(expected_members_at_gen, &mut proc_members);
-            }
-        }
-
-        fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet>) {
-            for packet in packets {
-                self.packets.entry(packet.source).or_default().push(packet);
-            }
-        }
-
-        fn drain_queued_packets(&mut self) {
-            while self.packets.len() > 0 {
-                let source = self.packets.keys().next().unwrap().clone();
-                self.deliver_packet_from_source(source);
-            }
-        }
-
-        fn trust(&mut self, p: Actor, q: Actor) {
-            if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
-                proc.trust(q);
-            }
-        }
-
-        fn generate_msc(&self) -> String {
-            // See: http://www.mcternan.me.uk/mscgen/
-            let mut msc = String::from(
-                "
-msc {\n
-  hscale = \"2\";\n
-",
-            );
-            let procs = self
-                .procs
-                .iter()
-                .map(|p| p.id.actor())
-                .collect::<BTreeSet<_>>() // sort by actor id
-                .into_iter()
-                .map(|id| format!("{:?}", id))
-                .collect::<Vec<_>>()
-                .join(",");
-            msc.push_str(&procs);
-            msc.push_str(";\n");
-            for packet in self.delivered_packets.iter() {
-                msc.push_str(&format!(
-                    "{}->{} [ label=\"{:?}\"];\n",
-                    packet.source, packet.dest, packet.vote
-                ));
-            }
-
-            msc.push_str("}\n");
-
-            // Replace process identifiers with friendlier numbers
-            // 1, 2, 3 ... instead of i:3b2, i:7def, ...
-            for (idx, proc_id) in self.procs.iter().map(|p| p.id.actor()).enumerate() {
-                let proc_id_as_str = format!("{}", proc_id);
-                msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
-            }
-
-            msc
         }
     }
 
