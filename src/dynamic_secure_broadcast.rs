@@ -219,14 +219,14 @@ impl Proc {
 
         if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
             println!("[DSB] Detected quorum over quorum");
-            let existing_member = self.members.contains(&self.id.actor());
-            let agreed_upon_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
-            for reconfig in agreed_upon_reconfigs.iter().cloned() {
+            let we_were_a_member_during_this_generation = self.members.contains(&self.id.actor());
+            let reconfigs_to_apply = self.resolve_votes(&self.votes.values().cloned().collect());
+            for reconfig in reconfigs_to_apply.iter().cloned() {
                 self.apply(reconfig);
             }
             self.gen = self.pending_gen;
 
-            // log a proof of what the network decided on so that we can onboard future procs.
+            // store a proof of what the network decided in our history so that we can onboard future procs.
             let ballot = Ballot::Quorum(self.votes.values().cloned().collect()).simplify();
             let vote = Vote {
                 voter: self.id.actor(),
@@ -239,11 +239,9 @@ impl Proc {
             // clear our pending votes
             self.votes = Default::default();
 
-            if existing_member {
-                // We were a voting member during this generation change. Onboard the newly joined members.
-
+            if we_were_a_member_during_this_generation {
                 // Figure out which procs we need to onboard.
-                let new_procs: BTreeSet<Actor> = agreed_upon_reconfigs
+                let new_members: BTreeSet<Actor> = reconfigs_to_apply
                     .into_iter()
                     .filter_map(|r| match r {
                         Reconfig::Join(p) => Some(p),
@@ -251,7 +249,7 @@ impl Proc {
                     })
                     .collect();
 
-                let onboarding_packets = new_procs
+                let onboarding_packets = new_members
                     .into_iter()
                     .flat_map(|p| {
                         // deliver the history in order from gen=1 onwards
@@ -291,10 +289,10 @@ impl Proc {
                     .is_some();
 
                 if we_have_comitted_to_reconfigs_not_in_quorum {
-                    println!("[DSB] We have committed to reconfigs that the quorum has not seen, wait till we either have a split vote or Q/Q");
+                    println!("[DSB] We have committed to reconfigs that the quorum has not seen, waiting till we either have a split vote or Q/Q");
                     return Ok(vec![]);
                 } else if our_vote.is_quorum_ballot() {
-                    println!("[DSB] We've already sent a quorum, wait till we either have a split vote or Q/Q");
+                    println!("[DSB] We've already sent a quorum, waiting till we either have a split vote or Q/Q");
                     return Ok(vec![]);
                 }
             }
