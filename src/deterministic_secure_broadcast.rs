@@ -128,7 +128,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
         println!("[DSB] {} syncing", self.actor());
-        self.membership.members.extend(state.peers);
+        // self.membership.members.extend(state.peers);
         self.delivered.merge(state.delivered.clone());
         self.received.merge(state.delivered); // We advance received up to what we've delivered
         self.algo.sync_from(state.algo_state);
@@ -262,7 +262,13 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
 	match payload {
 	    Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
-	    Payload::Membership(vote) => self.membership.validate_vote(vote).is_ok(),
+	    Payload::Membership(vote) => match self.membership.validate_vote(vote) {
+		Ok(()) => true,
+		Err(e) => {
+		    println!("[DSB] Membership packet failed validation: {:?}", e);
+	            false
+		},
+	    },
 	}
     }
 
