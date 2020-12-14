@@ -6,7 +6,7 @@ mod tests {
     use crdts::{CmRDT, Orswot};
 
     use crate::actor::Actor;
-    use crate::deterministic_secure_broadcast::Packet;
+    use crate::packet::Packet;
     use crate::net::Net;
     use crate::orswot::bft_orswot::BFTOrswot;
     use crate::traits::SecureBroadcastAlgorithm;
@@ -21,7 +21,8 @@ mod tests {
             let actor = net.initialize_proc();
             net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
             net.anti_entropy();
-            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
+	    let packets = net.on_proc_mut(&genesis_actor, |p| p.request_membership(actor).unwrap()).unwrap();
+            net.run_packets_to_completion(packets);
         }
 
         assert_eq!(net.members(), net.actors());
@@ -102,8 +103,10 @@ mod tests {
             .collect();
 
         // hold onto the proofs, don't deliver them till we've removed a few members
-        net.run_packets_to_completion(net.on_proc(&b, |p| p.kill_peer(b)).unwrap());
-        net.run_packets_to_completion(net.on_proc(&c, |p| p.kill_peer(c)).unwrap());
+	let packets_b = net.on_proc_mut(&b, |p| p.kill_peer(b).unwrap()).unwrap();
+        net.run_packets_to_completion(packets_b);
+	let packets_c = net.on_proc_mut(&c, |p| p.kill_peer(c).unwrap()).unwrap();
+        net.run_packets_to_completion(packets_c);
         net.run_packets_to_completion(proofs_packets);
 
         assert!(net.members_are_in_agreement());
@@ -233,7 +236,7 @@ mod tests {
                         if blocked.contains(&actor) {continue};
                         blocked.insert(actor.clone());
 
-                        for packet in net.on_proc(&actor, |p| p.request_membership()).unwrap() {
+                        for packet in net.on_proc_mut(&genesis_actor, |p| p.request_membership(actor).unwrap()).unwrap() {
                             for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
@@ -284,7 +287,7 @@ mod tests {
                         if blocked.contains(&actor) {continue};
                         blocked.insert(actor.clone());
                         let target_actor = members[target_actor_idx as usize % members.len()].clone();
-                        for packet in net.on_proc(&actor, |p| p.kill_peer(target_actor)).unwrap() {
+                        for packet in net.on_proc_mut(&actor, |p| p.kill_peer(target_actor).unwrap()).unwrap() {
                             for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues

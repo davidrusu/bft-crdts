@@ -1,12 +1,15 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::actor::Actor;
-use crate::deterministic_secure_broadcast::{Packet, SecureBroadcastProc};
+use crate::deterministic_secure_broadcast::{self, SecureBroadcastProc};
+use crate::packet::Packet;
 use crate::traits::SecureBroadcastAlgorithm;
+
 
 #[derive(Debug)]
 pub struct Net<A: SecureBroadcastAlgorithm> {
     pub procs: Vec<SecureBroadcastProc<A>>,
+    pub delivered_packets: Vec<Packet<A::Op>>,
     pub n_packets: u64,
 }
 
@@ -15,6 +18,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         Self {
             procs: Vec::new(),
             n_packets: 0,
+	    delivered_packets: Default::default()
         }
     }
 
@@ -102,6 +106,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
     pub fn deliver_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
+	self.delivered_packets.push(packet.clone());
         self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet))
             .unwrap_or_default()
     }
@@ -136,5 +141,43 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             let packet = packets.remove(0);
             packets.extend(self.deliver_packet(packet));
         }
+    }
+
+        pub fn generate_msc(&self) -> String {
+        // See: http://www.mcternan.me.uk/mscgen/
+        let mut msc = String::from(
+            "
+msc {\n
+  hscale = \"2\";\n
+",
+        );
+        let procs = self
+            .procs
+            .iter()
+            .map(|p| p.membership.id.actor())
+            .collect::<BTreeSet<_>>() // sort by actor id
+            .into_iter()
+            .map(|id| format!("{:?}", id))
+            .collect::<Vec<_>>()
+            .join(",");
+        msc.push_str(&procs);
+        msc.push_str(";\n");
+        for packet in self.delivered_packets.iter() {
+            msc.push_str(&format!(
+                "{}->{} [ label=\"{:?}\"];\n",
+                packet.source, packet.dest, packet.payload
+            ));
+        }
+
+        msc.push_str("}\n");
+
+        // Replace process identifiers with friendlier numbers
+        // 1, 2, 3 ... instead of i:3b2, i:7def, ...
+        for (idx, proc_id) in self.procs.iter().map(|p| p.membership.id.actor()).enumerate() {
+            let proc_id_as_str = format!("{}", proc_id);
+            msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
+        }
+
+        msc
     }
 }

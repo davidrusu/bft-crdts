@@ -10,5 +10,6 @@ pub mod actor;
 pub mod at2_impl;
 pub mod deterministic_secure_broadcast;
 pub mod bft_membership;
+pub mod packet;
 pub mod net;
 pub mod traits;

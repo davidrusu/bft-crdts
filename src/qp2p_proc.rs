@@ -11,10 +11,13 @@ use std::{
 };
 
 pub mod actor;
+pub mod at2_impl;
 pub mod deterministic_secure_broadcast;
+pub mod bft_membership;
+pub mod packet;
 pub mod net;
-pub mod orswot;
 pub mod traits;
+pub mod orswot;
 
 use actor::Actor;
 use deterministic_secure_broadcast as dsb;
@@ -23,7 +26,7 @@ use traits::SecureBroadcastAlgorithm;
 type Value = u64;
 type State = orswot::BFTOrswot<Value>;
 type DSB = dsb::SecureBroadcastProc<State>; // rename to SecureBroadcast
-type Packet = dsb::Packet<<State as SecureBroadcastAlgorithm>::Op>;
+type Packet = packet::Packet<<State as SecureBroadcastAlgorithm>::Op>;
 
 #[derive(Debug, Clone)]
 struct SharedDSB {
@@ -49,8 +52,8 @@ impl SharedDSB {
         self.dsb.lock().unwrap().trust_peer(peer);
     }
 
-    fn request_membership(&mut self) -> Vec<Packet> {
-        self.dsb.lock().unwrap().request_membership()
+    fn request_membership(&mut self, actor: Actor) -> Vec<Packet> {
+        self.dsb.lock().unwrap().request_membership(actor).unwrap()
     }
 
     fn exec_algo_op(
@@ -124,14 +127,12 @@ impl Repl {
     #[cmd]
     fn join(&mut self, args: &[String]) -> CommandResult {
         match args {
-            [] => {
-                for packet in self.state.request_membership() {
-                    self.network_tx
-                        .try_send(RouterCmd::Deliver(packet))
-                        .expect("Failed to queue packet");
-                }
+            [actor_id] => {
+                self.network_tx
+                    .try_send(RouterCmd::RequestMembership(actor_id.to_string()))
+                    .unwrap();
             }
-            _ => println!("help: join takes no arguments"),
+            _ => println!("help: join takes one arguments, the actor to add to the network"),
         };
         Ok(Action::Done)
     }
@@ -196,6 +197,7 @@ struct Router {
 #[derive(Debug)]
 enum RouterCmd {
     ListPeers,
+    RequestMembership(String),
     Trust(String),
     SayHello(SocketAddr),
     AddPeer(Actor, SocketAddr),
@@ -278,6 +280,31 @@ impl Router {
                     }
                 }
             }
+	    RouterCmd::RequestMembership(actor_id) => {
+		let matching_actors: Vec<Actor> = self
+                    .peers
+                    .iter()
+                    .map(|(actor, _)| actor)
+                    .cloned()
+                    .filter(|actor| format!("{:?}", actor).starts_with(&actor_id))
+                    .collect();
+
+                if matching_actors.len() > 1 {
+                    println!("Ambiguous actor id, more than one actor matches:");
+
+                    for actor in matching_actors {
+                        println!("{:?}", actor);
+                    }
+                } else if matching_actors.len() == 0 {
+                    println!("No actors with that actor id");
+                } else {
+                    let actor = matching_actors[0];
+                    println!("Starting join for actor: {:?}", actor);
+		    for packet in self.state.request_membership(actor) {
+			self.deliver_packet(packet).await;
+		    }
+                }
+	    }
             RouterCmd::Trust(actor_id) => {
                 let matching_actors: Vec<Actor> = self
                     .peers

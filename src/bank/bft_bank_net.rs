@@ -1,7 +1,11 @@
 use crate::actor::Actor;
 use crate::bank::bft_bank::{Bank, Money, Op};
-use crate::deterministic_secure_broadcast::Packet;
+use crate::packet::Packet;
 use crate::net::Net;
+
+    use std::fs::File;
+    use std::io::Write;
+
 
 impl Net<Bank> {
     pub fn find_actor_with_balance(&self, balance: Money) -> Option<Actor> {
@@ -59,7 +63,11 @@ mod tests {
             let actor = net.initialize_proc();
             net.on_proc_mut(&actor, |p| p.trust_peer(genesis_actor));
             net.anti_entropy();
-            net.run_packets_to_completion(net.on_proc(&actor, |p| p.request_membership()).unwrap());
+	    let packets = net.on_proc_mut(&genesis_actor, |p| p.request_membership(actor).unwrap()).unwrap();
+            net.run_packets_to_completion(packets);
+	    let mut msc_file = File::create("attempt_double_spend.msc").unwrap();
+            msc_file.write_all(net.generate_msc().as_bytes()).unwrap();
+
             assert!(net.members_are_in_agreement());
             assert_eq!(net.count_invalid_packets(), 0);
 
