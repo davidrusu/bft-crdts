@@ -1,8 +1,5 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::Write;
-
 use crate::actor::{Actor, Sig, SigningActor};
 
 const SOFT_MAX_MEMBERS: usize = 7;
@@ -299,15 +296,7 @@ impl Proc {
                 } else if our_vote.is_quorum_ballot() {
                     println!("[DSB] We've already sent a quorum, wait till we either have a split vote or Q/Q");
                     return Ok(vec![]);
-                } else if vote.is_quorum_ballot() && vote.supersedes(&our_vote) {
-                    println!("[DSB] Adopting their quorum");
-		    let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
-                    return self.cast_vote(vote);
                 }
-            } else if vote.is_quorum_ballot() {
-                println!("[DSB] Adopting their quorum");
-		let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
-                return self.cast_vote(vote);
             }
 
             println!("[DSB] broadcasting quorum");
@@ -753,6 +742,9 @@ msc {\n
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::Write;
+
     use crdts::quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 
     #[test]
