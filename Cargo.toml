@@ -9,6 +9,10 @@ license = "MIT OR BSD-3-Clause"
 name = "qp2p_proc"
 path = "src/qp2p_proc.rs"
 
+[[bin]]
+name = "dynamic_membership"
+path = "src/dynamic_membership.rs"
+
 [dependencies]
 crdts = "4.0.0"
 ed25519 = { version = "1.0.0", package = "ed25519-dalek", features = ["serde"] }

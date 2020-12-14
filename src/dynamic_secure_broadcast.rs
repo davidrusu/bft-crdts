@@ -182,7 +182,8 @@ impl Proc {
     }
 
     pub fn reconfig(&mut self, reconfig: Reconfig) -> Result<Vec<Packet>, Error> {
-        self.cast_ballot(self.gen + 1, Ballot::Propose(reconfig))
+	let vote = self.build_vote(self.gen + 1, Ballot::Propose(reconfig));
+        self.cast_vote(vote)
     }
 
     pub fn handle_packet(&mut self, packet: Packet) -> Result<Vec<Packet>, Error> {
@@ -197,28 +198,26 @@ impl Proc {
 
         if self.is_split_vote(&self.votes.values().cloned().collect()) {
             println!("[DSB] Detected split vote");
+	    let merge_vote = self.build_vote(
+		self.pending_gen,
+		Ballot::Merge(self.votes.values().cloned().collect()).simplify()
+	    );
+
             if let Some(our_vote) = self.votes.get(&self.id.actor()) {
                 let reconfigs_we_voted_for =
                     self.resolve_votes(&our_vote.unpack_votes().into_iter().cloned().collect());
 
-                let reconfigs_they_voted_for =
-                    self.resolve_votes(&vote.unpack_votes().into_iter().cloned().collect());
+                let reconfigs_we_would_vote_for =
+                    self.resolve_votes(&merge_vote.unpack_votes().into_iter().cloned().collect());
 
-                if reconfigs_we_voted_for == reconfigs_they_voted_for || our_vote.supersedes(&vote)
-                {
-                    println!("[DSB] Either they've voted the same as us or we've seen their vote already, waiting for more votes...");
+                if reconfigs_we_voted_for == reconfigs_we_would_vote_for {
+                    println!("[DSB] This vote didn't add any new information, waiting for more votes...");
                     return Ok(vec![]);
-                } else if vote.supersedes(our_vote) {
-                    println!("[DSB] Their vote supersedes ours, adopting.");
-                    return self.cast_ballot(self.pending_gen, vote.ballot.clone());
                 }
             }
 
             println!("[DSB] Our votes don't fully overlap, merge them.");
-            return self.cast_ballot(
-                self.pending_gen,
-                Ballot::Merge(self.votes.values().cloned().collect()).simplify(),
-            );
+            return self.cast_vote(merge_vote);
         }
 
         if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
@@ -302,43 +301,47 @@ impl Proc {
                     return Ok(vec![]);
                 } else if vote.is_quorum_ballot() && vote.supersedes(&our_vote) {
                     println!("[DSB] Adopting their quorum");
-                    return self.cast_ballot(self.pending_gen, vote.ballot.clone());
+		    let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
+                    return self.cast_vote(vote);
                 }
             } else if vote.is_quorum_ballot() {
                 println!("[DSB] Adopting their quorum");
-                return self.cast_ballot(self.pending_gen, vote.ballot.clone());
+		let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
+                return self.cast_vote(vote);
             }
 
             println!("[DSB] broadcasting quorum");
-            return self.cast_ballot(
+	    let vote = self.build_vote(
                 self.pending_gen,
                 Ballot::Quorum(self.votes.values().cloned().collect()).simplify(),
             );
+            return self.cast_vote(vote);
         }
 
         // We have determined that we don't yet have enough votes to take action.
         // If we have not yet voted, this is where we would contribute our vote
         if !self.votes.contains_key(&self.id.actor()) {
             // vote with all pending reconfigs
-            return self.cast_ballot(self.pending_gen, vote.ballot.clone());
+	    let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
+            return self.cast_vote(vote);
         }
 
         Ok(vec![])
     }
 
-    fn cast_ballot(&mut self, gen: Generation, ballot: Ballot) -> Result<Vec<Packet>, Error> {
+    fn build_vote(&self, gen: Generation, ballot: Ballot) -> Vote {
         assert!(self.gen == gen || self.gen + 1 == gen);
-
-        let vote = Vote {
+        Vote {
             voter: self.id.actor(),
             sig: self.id.sign((&ballot, &gen)),
             ballot,
             gen,
-        };
+        }
+    }
 
+    fn cast_vote(&mut self, vote: Vote) -> Result<Vec<Packet>, Error> {
         self.validate_vote(&vote)?;
-
-        self.pending_gen = gen;
+        self.pending_gen = vote.gen;
         self.log_vote(&vote);
         Ok(self.broadcast(vote))
     }
