@@ -2,9 +2,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::actor::{Actor, Sig};
-use crate::traits::SecureBroadcastAlgorithm;
 use crate::bft_membership::{self, Generation};
 use crate::packet::{Packet, Payload};
+use crate::traits::SecureBroadcastAlgorithm;
 
 use crdts::{CmRDT, CvRDT, Dot, VClock};
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,6 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
     pub algo_state: A::ReplicatedState,
-    pub peers: BTreeSet<Actor>,
     pub delivered: VClock<Actor>,
 }
 
@@ -44,22 +43,22 @@ pub struct ReplicatedState<A: SecureBroadcastAlgorithm> {
 pub struct Msg<AlgoOp> {
     gen: Generation,
     op: AlgoOp,
-    dot: Dot<Actor>
+    dot: Dot<Actor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op<AlgoOp> {
     RequestValidation {
-	msg: Msg<AlgoOp>
+        msg: Msg<AlgoOp>,
     },
     SignedValidated {
-	msg: Msg<AlgoOp>,
+        msg: Msg<AlgoOp>,
         sig: Sig,
     },
     ProofOfAgreement {
-	msg: Msg<AlgoOp>,
+        msg: Msg<AlgoOp>,
         proof: BTreeMap<Actor, Sig>,
-    }
+    },
 }
 
 impl<AlgoOp> Payload<AlgoOp> {
@@ -71,13 +70,12 @@ impl<AlgoOp> Payload<AlgoOp> {
     }
 }
 
-
 impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     pub fn new() -> Self {
-	let membership = bft_membership::State::default();
-	let algo = A::new(membership.id.actor());
+        let membership = bft_membership::State::default();
+        let algo = A::new(membership.id.actor());
         Self {
-	    membership,
+            membership,
             algo,
             pending_proof: Default::default(),
             delivered: Default::default(),
@@ -87,38 +85,38 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     pub fn actor(&self) -> Actor {
-	self.membership.id.actor()
+        self.membership.id.actor()
     }
 
     pub fn state(&self) -> ReplicatedState<A> {
         ReplicatedState {
             algo_state: self.algo.state(),
-            peers: self.peers(),
             delivered: self.delivered.clone(),
         }
     }
 
     pub fn peers(&self) -> BTreeSet<Actor> {
-	self.membership.members.clone()
+        self.membership.members(self.membership.gen).unwrap()
     }
 
     pub fn trust_peer(&mut self, peer: Actor) {
         println!("[DSB] {:?} is trusting {:?}", self.actor(), peer);
-	self.membership.trust(peer);
+        self.membership.trust(peer);
     }
 
-    pub fn request_membership(&mut self, actor: Actor) -> Result<Vec<Packet<A::Op>>, bft_membership::Error> {
-	Ok(
-	    self.membership
-		.reconfig(bft_membership::Reconfig::Join(actor))?
-	)
+    pub fn request_membership(
+        &mut self,
+        actor: Actor,
+    ) -> Result<Vec<Packet<A::Op>>, bft_membership::Error> {
+        Ok(self
+            .membership
+            .reconfig(bft_membership::Reconfig::Join(actor))?)
     }
 
     pub fn kill_peer(&mut self, actor: Actor) -> Result<Vec<Packet<A::Op>>, bft_membership::Error> {
-	Ok(
-	    self.membership
-		.reconfig(bft_membership::Reconfig::Leave(actor))?
-	)
+        Ok(self
+            .membership
+            .reconfig(bft_membership::Reconfig::Leave(actor))?)
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
@@ -128,7 +126,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         //
         // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
         println!("[DSB] {} syncing", self.actor());
-        // self.membership.members.extend(state.peers);
         self.delivered.merge(state.delivered.clone());
         self.received.merge(state.delivered); // We advance received up to what we've delivered
         self.algo.sync_from(state.algo_state);
@@ -170,10 +167,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn process_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
-	match packet.payload {
-	    Payload::SecureBroadcast(op) => self.process_secure_broadcast_op(packet.source, op),
-	    Payload::Membership(vote) => self.membership.handle_vote(vote).unwrap(),
-	}
+        match packet.payload {
+            Payload::SecureBroadcast(op) => self.process_secure_broadcast_op(packet.source, op),
+            Payload::Membership(vote) => self.membership.handle_vote(vote).unwrap(),
+        }
     }
 
     fn process_secure_broadcast_op(&mut self, source: Actor, op: Op<A::Op>) -> Vec<Packet<A::Op>> {
@@ -201,7 +198,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 // we don't want to re-broadcast a proof if we've already reached quorum
                 // hence we check that (num_sigs - 1) was not quorum
-                if self.quorum(num_signatures) && !self.quorum(num_signatures - 1) {
+                if self.quorum(num_signatures, msg.gen) && !self.quorum(num_signatures - 1, msg.gen)
+                {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
                     let proof = self.pending_proof[&msg].clone();
@@ -209,9 +207,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     // Add ourselves to the broadcast recipients since we may have initiated this request
                     // while we were not yet an accepted member of the network.
                     // e.g. this happens if we request to join the network.
-                    let recipients = &self.membership.members | &vec![self.actor()].into_iter().collect();
-                    let packets =
-                        self.broadcast(&Op::ProofOfAgreement { msg, proof }, recipients);
+                    let recipients = &self.membership.members(msg.gen).unwrap()
+                        | &vec![self.actor()].into_iter().collect();
+                    let packets = self.broadcast(&Op::ProofOfAgreement { msg, proof }, recipients);
 
                     packets
                 } else {
@@ -230,7 +228,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 self.delivered.apply(msg.dot);
 
                 // Apply the op
-		self.algo.apply(msg.op);
+                self.algo.apply(msg.op);
 
                 // TODO: Once we relax our network assumptions, we must put in an ack
                 // here so that the source knows that honest procs have applied the transaction
@@ -260,16 +258,16 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> bool {
-	match payload {
-	    Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
-	    Payload::Membership(vote) => match self.membership.validate_vote(vote) {
-		Ok(()) => true,
-		Err(e) => {
-		    println!("[DSB] Membership packet failed validation: {:?}", e);
-	            false
-		},
-	    },
-	}
+        match payload {
+            Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
+            Payload::Membership(vote) => match self.membership.validate_vote(vote) {
+                Ok(()) => true,
+                Err(e) => {
+                    println!("[DSB] Membership packet failed validation: {:?}", e);
+                    false
+                }
+            },
+        }
     }
 
     fn validate_secure_broadcast_op(&self, from: Actor, op: &Op<A::Op>) -> bool {
@@ -293,7 +291,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 		    "This message is from a different generation".to_string(),
 		),
 		(
-                    self.membership.members.contains(&from),
+                    self.membership.members(self.membership.gen).unwrap().contains(&from),
                     "source is not a voting member of the network".to_string(),
                 ),
                 (self.algo.validate(&from, &msg.op), "failed algo validation".to_string())
@@ -318,13 +316,16 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     ),
                 ),
                 (
-                    self.quorum(proof.len()),
+                    self.quorum(proof.len(), msg.gen),
                     "not enough signatures for quorum".to_string(),
                 ),
                 (
-                    proof
-                        .iter()
-                        .all(|(signatory, _sig)| self.membership.members.contains(&signatory)),
+                    proof.iter().all(|(signatory, _sig)| {
+                        self.membership
+                            .members(msg.gen)
+                            .unwrap()
+                            .contains(&signatory)
+                    }),
                     "proof contains signature(s) from unknown peer(s)".to_string(),
                 ),
                 (
@@ -346,7 +347,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn exec_op(&self, op: A::Op) -> Vec<Packet<A::Op>> {
         let msg = Msg {
             op,
-	    gen: self.membership.gen,
+            gen: self.membership.gen,
             // We use the received clock to allow for many operations from this process
             // to be pending agreement at any one point in time.
             dot: self.received.inc(self.actor()),
@@ -356,8 +357,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.broadcast(&Op::RequestValidation { msg }, self.peers())
     }
 
-    fn quorum(&self, n: usize) -> bool {
-        n * 3 > self.membership.members.len() * 2
+    fn quorum(&self, n: usize, gen: Generation) -> bool {
+        n * 3 > self.membership.members(gen).unwrap().len() * 2
     }
 
     fn broadcast(&self, op: &Op<A::Op>, targets: BTreeSet<Actor>) -> Vec<Packet<A::Op>> {
@@ -370,7 +371,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn send(&self, dest: Actor, op: Op<A::Op>) -> Packet<A::Op> {
-	let payload = Payload::SecureBroadcast(op);
+        let payload = Payload::SecureBroadcast(op);
         let sig = self.membership.id.sign(&payload);
         Packet {
             source: self.actor(),
