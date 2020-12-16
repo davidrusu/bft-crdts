@@ -200,7 +200,7 @@ impl State {
         Err(Error::InvalidGeneration(gen))
     }
 
-    pub fn reconfig<T: Serialize>(&mut self, reconfig: Reconfig) -> Result<Vec<Packet<T>>, Error> {
+    pub fn propose<T: Serialize>(&mut self, reconfig: Reconfig) -> Result<Vec<Packet<T>>, Error> {
         let vote = self.build_vote(self.gen + 1, Ballot::Propose(reconfig));
         self.cast_vote(vote)
     }
@@ -234,7 +234,7 @@ impl State {
                 }
             }
 
-            println!("[DSB] Our votes don't fully overlap, merge them.");
+            println!("[DSB] Either we haven't voted or our previous vote didn't fully overlap, merge them.");
             return self.cast_vote(merge_vote);
         }
 
@@ -769,11 +769,9 @@ mod tests {
     fn test_reject_changing_reconfig_when_one_is_in_progress() {
         let mut proc = State::default();
         proc.trust(proc.id.actor());
-        assert!(proc
-            .reconfig::<()>(Reconfig::Join(Actor::default()))
-            .is_ok());
+        assert!(proc.propose::<()>(Reconfig::Join(Actor::default())).is_ok());
         assert!(matches!(
-            proc.reconfig::<()>(Reconfig::Join(Actor::default())),
+            proc.propose::<()>(Reconfig::Join(Actor::default())),
             Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { .. })
         ));
     }
@@ -787,7 +785,7 @@ mod tests {
         net.trust(p1, p0);
         net.trust(p1, p1);
 
-        let resp = net.procs[1].reconfig(Reconfig::Join(Default::default()));
+        let resp = net.procs[1].propose(Reconfig::Join(Default::default()));
         assert!(resp.is_ok());
         net.queue_packets(resp.unwrap());
         net.drain_queued_packets();
@@ -802,14 +800,14 @@ mod tests {
         proc.trust(proc.id.actor());
 
         assert_eq!(
-            proc.reconfig::<()>(Reconfig::Join(Actor::default())),
+            proc.propose::<()>(Reconfig::Join(Actor::default())),
             Err(Error::MembersAtCapacity {
                 members: proc.members(proc.gen).unwrap()
             })
         );
 
         assert!(proc
-            .reconfig::<()>(Reconfig::Leave(
+            .propose::<()>(Reconfig::Leave(
                 proc.members(proc.gen).unwrap().into_iter().next().unwrap()
             ))
             .is_ok())
@@ -826,7 +824,7 @@ mod tests {
         let member = proc.members(proc.gen).unwrap().into_iter().next().unwrap();
 
         assert_eq!(
-            proc.reconfig::<()>(Reconfig::Join(member)),
+            proc.propose::<()>(Reconfig::Join(member)),
             Err(Error::JoinRequestForExistingMember {
                 requester: member,
                 members: proc.members(proc.gen).unwrap(),
@@ -844,7 +842,7 @@ mod tests {
 
         let leaving_actor = Actor::default();
         assert_eq!(
-            proc.reconfig::<()>(Reconfig::Leave(leaving_actor)),
+            proc.propose::<()>(Reconfig::Leave(leaving_actor)),
             Err(Error::LeaveRequestForNonMember {
                 requester: leaving_actor,
                 members: proc.members(proc.gen).unwrap(),
@@ -863,10 +861,10 @@ mod tests {
         net.procs[1].trust(a_1);
 
         let packets = net.procs[0]
-            .reconfig::<()>(Reconfig::Join(Actor::default()))
+            .propose::<()>(Reconfig::Join(Actor::default()))
             .unwrap();
         let mut stale_packets = net.procs[1]
-            .reconfig::<()>(Reconfig::Join(Actor::default()))
+            .propose::<()>(Reconfig::Join(Actor::default()))
             .unwrap();
         net.procs[1].pending_gen = 0;
         net.procs[1].votes = Default::default();
@@ -925,7 +923,7 @@ mod tests {
                 net.procs[nprocs..].iter().map(|p| p.id.actor()).collect();
             for i in 0..nprocs {
                 let member = joining_members[i];
-                let packets = net.procs[i].reconfig(Reconfig::Join(member)).unwrap();
+                let packets = net.procs[i].propose(Reconfig::Join(member)).unwrap();
                 net.queue_packets(packets);
             }
 
@@ -966,7 +964,7 @@ mod tests {
                 net.procs[nprocs..].iter().map(|p| p.id.actor()).collect();
             for i in 0..nprocs {
                 let member = joining_members[i];
-                let packets = net.procs[i].reconfig(Reconfig::Join(member)).unwrap();
+                let packets = net.procs[i].propose(Reconfig::Join(member)).unwrap();
                 net.queue_packets(packets);
             }
 
@@ -1007,11 +1005,11 @@ mod tests {
         for i in 0..3 {
             net.procs[i].trust(p0);
         }
-        let packets = net.procs[0].reconfig(Reconfig::Join(p1)).unwrap();
+        let packets = net.procs[0].propose(Reconfig::Join(p1)).unwrap();
         net.queue_packets(packets);
         net.deliver_packet_from_source(p0);
         net.deliver_packet_from_source(p0);
-        let packets = net.procs[0].reconfig(Reconfig::Join(p2)).unwrap();
+        let packets = net.procs[0].propose(Reconfig::Join(p2)).unwrap();
         net.queue_packets(packets);
         net.drain_queued_packets();
 
@@ -1032,6 +1030,26 @@ mod tests {
         for proc in procs_by_gen[max_gen].iter() {
             assert_eq!(current_members, proc.members(proc.gen).unwrap());
         }
+    }
+
+    #[test]
+    fn test_simple_proposal() {
+        let mut net = Net::with_procs(4);
+        for i in 0..4 {
+            let a_i = net.procs[i].id.actor();
+            for j in 0..3 {
+                let a_j = net.procs[j].id.actor();
+                net.trust(a_i, a_j);
+            }
+        }
+
+        let proc_3 = net.procs[3].id.actor();
+        let packets = net.procs[0].propose(Reconfig::Join(proc_3)).unwrap();
+        net.queue_packets(packets);
+        net.drain_queued_packets();
+
+        let mut msc_file = File::create("simple_join.msc").unwrap();
+        msc_file.write_all(net.generate_msc().as_bytes()).unwrap();
     }
 
     #[derive(Debug, Clone)]
@@ -1118,11 +1136,11 @@ mod tests {
                         let reconfig = Reconfig::Join(p);
 
                         let q = &mut net.procs[q_idx.min(n - 1)];
-                        match q.reconfig(reconfig.clone()) {
-                            Ok(reconfig_packets) => {
+                        match q.propose(reconfig.clone()) {
+                            Ok(propose_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
-                                assert!(reconfig_packets.iter().all(|p| p.source == q.id.actor()));
-                                net.queue_packets(reconfig_packets);
+                                assert!(propose_packets.iter().all(|p| p.source == q.id.actor()));
+                                net.queue_packets(propose_packets);
                             }
                             Err(Error::JoinRequestForExistingMember { .. }) => {
                                 assert!(q.members(q.gen).unwrap().contains(&p));
@@ -1148,11 +1166,11 @@ mod tests {
                         let reconfig = Reconfig::Leave(p);
 
                         let q = &mut net.procs[q_idx.min(n - 1)];
-                        match q.reconfig(reconfig.clone()) {
-                            Ok(reconfig_packets) => {
+                        match q.propose(reconfig.clone()) {
+                            Ok(propose_packets) => {
                                 net.reconfigs_by_gen.entry(q.pending_gen).or_default().insert(reconfig);
-                                assert!(reconfig_packets.iter().all(|p| p.source == q.id.actor()));
-                                net.queue_packets(reconfig_packets);
+                                assert!(propose_packets.iter().all(|p| p.source == q.id.actor()));
+                                net.queue_packets(propose_packets);
                             }
                             Err(Error::LeaveRequestForNonMember { .. }) => {
                                 assert!(!q.members(q.gen).unwrap().contains(&p));

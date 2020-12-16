@@ -110,13 +110,13 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     ) -> Result<Vec<Packet<A::Op>>, bft_membership::Error> {
         Ok(self
             .membership
-            .reconfig(bft_membership::Reconfig::Join(actor))?)
+            .propose(bft_membership::Reconfig::Join(actor))?)
     }
 
     pub fn kill_peer(&mut self, actor: Actor) -> Result<Vec<Packet<A::Op>>, bft_membership::Error> {
         Ok(self
             .membership
-            .reconfig(bft_membership::Reconfig::Leave(actor))?)
+            .propose(bft_membership::Reconfig::Leave(actor))?)
     }
 
     pub fn sync_from(&mut self, state: ReplicatedState<A>) {
