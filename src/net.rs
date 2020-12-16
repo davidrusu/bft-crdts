@@ -1,10 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 
+use std::fs::File;
+use std::io::Write;
+
 use crate::actor::Actor;
 use crate::deterministic_secure_broadcast::{self, SecureBroadcastProc};
 use crate::packet::Packet;
 use crate::traits::SecureBroadcastAlgorithm;
-
 
 #[derive(Debug)]
 pub struct Net<A: SecureBroadcastAlgorithm> {
@@ -18,7 +20,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         Self {
             procs: Vec::new(),
             n_packets: 0,
-	    delivered_packets: Default::default()
+            delivered_packets: Default::default(),
         }
     }
 
@@ -106,7 +108,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
     pub fn deliver_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
-	self.delivered_packets.push(packet.clone());
+        self.delivered_packets.push(packet.clone());
         self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet))
             .unwrap_or_default()
     }
@@ -143,7 +145,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         }
     }
 
-        pub fn generate_msc(&self) -> String {
+    pub fn generate_msc(&self, chart_name: &str) {
         // See: http://www.mcternan.me.uk/mscgen/
         let mut msc = String::from(
             "
@@ -173,11 +175,16 @@ msc {\n
 
         // Replace process identifiers with friendlier numbers
         // 1, 2, 3 ... instead of i:3b2, i:7def, ...
-        for (idx, proc_id) in self.procs.iter().map(|p| p.membership.id.actor()).enumerate() {
+        for (idx, proc_id) in self
+            .procs
+            .iter()
+            .map(|p| p.membership.id.actor())
+            .enumerate()
+        {
             let proc_id_as_str = format!("{}", proc_id);
             msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
         }
-
-        msc
+        let mut msc_file = File::create(format!("{}.msc", chart_name)).unwrap();
+        msc_file.write_all(msc.as_bytes()).unwrap();
     }
 }
