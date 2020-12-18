@@ -45,7 +45,7 @@ impl SharedDSB {
     }
 
     fn peers(&self) -> BTreeSet<Actor> {
-        self.dsb.lock().unwrap().peers()
+        self.dsb.lock().unwrap().peers().unwrap()
     }
 
     fn trust_peer(&mut self, peer: Actor) {
@@ -60,11 +60,11 @@ impl SharedDSB {
         &self,
         f: impl FnOnce(&State) -> Option<<State as SecureBroadcastAlgorithm>::Op>,
     ) -> Vec<Packet> {
-        self.dsb.lock().unwrap().exec_algo_op(f)
+        self.dsb.lock().unwrap().exec_algo_op(f).unwrap()
     }
 
     fn apply(&self, packet: Packet) -> Vec<Packet> {
-        self.dsb.lock().unwrap().apply(packet)
+        self.dsb.lock().unwrap().apply(packet).unwrap()
     }
 
     fn read(&self) -> HashSet<Value> {

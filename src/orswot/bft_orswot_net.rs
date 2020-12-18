@@ -41,7 +41,7 @@ mod tests {
         // Initiate the signing round DSB but don't deliver signatures
         let pending_packets = net
             .on_proc(&actor, |proc| {
-                proc.exec_algo_op(|orswot| Some(orswot.add(0)))
+                proc.exec_algo_op(|orswot| Some(orswot.add(0))).unwrap()
             })
             .unwrap()
             .into_iter()
@@ -51,7 +51,7 @@ mod tests {
         // Initiate the signing round again but for a different op (adding 1 instead of 0)
         let invalid_pending_packets = net
             .on_proc(&actor, |proc| {
-                proc.exec_algo_op(|orswot| Some(orswot.add(1)))
+                proc.exec_algo_op(|orswot| Some(orswot.add(1))).unwrap()
             })
             .unwrap()
             .into_iter()
@@ -87,7 +87,7 @@ mod tests {
         // initiating process 'a' broadcasts requests for validation
         let req_for_valid_packets = net
             .on_proc(&a, |p| {
-                p.exec_algo_op(|orswot| Some(orswot.add(value_to_add)))
+                p.exec_algo_op(|orswot| Some(orswot.add(value_to_add))).unwrap()
             })
             .unwrap();
 
@@ -131,7 +131,7 @@ mod tests {
             let actors_loop = net.actors().into_iter().collect::<Vec<_>>().into_iter().cycle();
             for (i, member) in actors_loop.zip(members.clone().into_iter()) {
                 net.run_packets_to_completion(
-                    net.on_proc(&i, |p| p.exec_algo_op(|orswot| Some(orswot.add(member)))).unwrap()
+                    net.on_proc(&i, |p| p.exec_algo_op(|orswot| Some(orswot.add(member))).unwrap()).unwrap()
                 )
             }
 
@@ -163,12 +163,12 @@ mod tests {
                 if adding {
                     model.insert(member.clone());
                     net.run_packets_to_completion(
-                        net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(member)))).unwrap()
+                        net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(member))).unwrap()).unwrap()
                     );
                 } else {
                     model.remove(&member);
                     net.run_packets_to_completion(
-                        net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(member))).unwrap()
+                        net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(member)).unwrap()).unwrap()
                     );
                 }
             }
@@ -253,7 +253,7 @@ mod tests {
                         }
                 }
                 Err(bft_membership::Error::JoinRequestForExistingMember {..}) => {
-                assert!(net.on_proc(&genesis_actor, |p| p.peers()).unwrap().contains(&actor));
+                assert!(net.on_proc(&genesis_actor, |p| p.peers().unwrap()).unwrap().contains(&actor));
                 },
                 e => panic!("Unexpected error {:?}", e)
             }
@@ -265,7 +265,7 @@ mod tests {
                         blocked.insert(actor.clone());
 
                         model.apply(model.add(v, model.read_ctx().derive_add_ctx(actor)));
-                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v)))).unwrap() {
+                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| Some(orswot.add(v))).unwrap()).unwrap() {
                             for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues
@@ -283,7 +283,7 @@ mod tests {
 
                         model.apply(model.rm(v, model.contains(&v).derive_rm_ctx()));
 
-                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v))).unwrap() {
+                        for packet in net.on_proc(&actor, |p| p.exec_algo_op(|orswot| orswot.rm(v)).unwrap()).unwrap() {
                             for resp_packet in net.deliver_packet(packet) {
                                 let queue = (resp_packet.source.clone(), resp_packet.dest.clone());
                                 packet_queues

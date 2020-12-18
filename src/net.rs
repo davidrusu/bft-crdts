@@ -31,9 +31,10 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             .iter()
             .map(|proc| {
                 proc.peers()
+		    .unwrap()
                     .iter()
                     .flat_map(|peer| self.proc_from_actor(peer))
-                    .filter(|peer_proc| peer_proc.peers().contains(&proc.actor()))
+                    .filter(|peer_proc| peer_proc.peers().unwrap().contains(&proc.actor()))
                     .map(|peer_proc| peer_proc.actor())
                     .collect::<BTreeSet<_>>()
             })
@@ -93,7 +94,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         // TODO: this should be done through a message passing interface.
         println!("[NET] anti-entropy");
 
-        let peer_map: HashMap<_, _> = self.procs.iter().map(|p| (p.actor(), p.peers())).collect();
+        let peer_map: HashMap<_, _> = self.procs.iter().map(|p| (p.actor(), p.peers().unwrap())).collect();
         for (proc, peers) in peer_map {
             for peer in peers {
                 let peer_state = self.proc_from_actor(&peer).unwrap().state();
@@ -109,7 +110,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
         self.delivered_packets.push(packet.clone());
-        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet))
+        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet).unwrap())
             .unwrap_or_default()
     }
 
