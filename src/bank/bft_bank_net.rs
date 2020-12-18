@@ -3,9 +3,6 @@ use crate::bank::bft_bank::{Bank, Money, Op};
 use crate::net::Net;
 use crate::packet::Packet;
 
-use std::fs::File;
-use std::io::Write;
-
 impl Net<Bank> {
     pub fn find_actor_with_balance(&self, balance: Money) -> Option<Actor> {
         self.actors()

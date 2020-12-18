@@ -146,7 +146,7 @@ pub enum Error {
         requester: Actor,
         members: BTreeSet<Actor>,
     },
-    VoteNotForThisGeneration {
+    VoteNotForNextGeneration {
         vote_gen: Generation,
         gen: Generation,
         pending_gen: Generation,
@@ -158,7 +158,7 @@ pub enum Error {
     VoterChangedMind {
         reconfigs: BTreeSet<(Actor, Reconfig)>,
     },
-    ExistingVoteFromVoterIsNotPresentInNewVote {
+    ExistingVoteIncompatibleWithNewVote {
         vote: Vote,
         existing_vote: Vote,
     },
@@ -167,6 +167,7 @@ pub enum Error {
         members: BTreeSet<Actor>,
     },
     InvalidGeneration(Generation),
+    InvalidVoteInHistory(Vote),
 }
 
 impl State {
@@ -183,7 +184,9 @@ impl State {
         for (history_gen, vote) in self.history.iter() {
             let votes = match &vote.ballot {
                 Ballot::Quorum(votes) => votes,
-                _ => panic!("Unexpected vote type"),
+                _ => {
+                    return Err(Error::InvalidVoteInHistory(vote.clone()));
+                }
             };
             for reconfig in self.resolve_votes(votes) {
                 match reconfig {
@@ -211,9 +214,7 @@ impl State {
         self.log_vote(&vote);
         self.pending_gen = vote.gen;
 
-        assert_eq!(self.gen + 1, self.pending_gen);
-
-        if self.is_split_vote(&self.votes.values().cloned().collect()) {
+        if self.is_split_vote(&self.votes.values().cloned().collect())? {
             println!("[DSB] Detected split vote");
             let merge_vote = self.build_vote(
                 self.pending_gen,
@@ -238,10 +239,10 @@ impl State {
             return self.cast_vote(merge_vote);
         }
 
-        if self.is_quorum_over_quorums(&self.votes.values().cloned().collect()) {
+        if self.is_quorum_over_quorums(&self.votes.values().cloned().collect())? {
             println!("[DSB] Detected quorum over quorum");
             let we_were_a_member_during_this_generation =
-                self.members(self.gen).unwrap().contains(&self.id.actor());
+                self.members(self.gen)?.contains(&self.id.actor());
 
             let reconfigs_we_agreed_to =
                 self.resolve_votes(&self.votes.values().cloned().collect());
@@ -288,7 +289,7 @@ impl State {
             }
         }
 
-        if self.is_quorum(&self.votes.values().cloned().collect()) {
+        if self.is_quorum(&self.votes.values().cloned().collect())? {
             println!("[DSB] Detected quorum");
 
             if let Some(our_vote) = self.votes.get(&self.id.actor()) {
@@ -339,7 +340,6 @@ impl State {
     }
 
     fn build_vote(&self, gen: Generation, ballot: Ballot) -> Vote {
-        assert!(self.gen == gen || self.gen + 1 == gen);
         Vote {
             voter: self.id.actor(),
             sig: self.id.sign((&ballot, &gen)),
@@ -352,7 +352,7 @@ impl State {
         self.validate_vote(&vote)?;
         self.pending_gen = vote.gen;
         self.log_vote(&vote);
-        Ok(self.broadcast(vote))
+        self.broadcast(vote)
     }
 
     fn log_vote(&mut self, vote: &Vote) {
@@ -382,18 +382,18 @@ impl State {
         count
     }
 
-    fn is_split_vote(&self, votes: &BTreeSet<Vote>) -> bool {
+    fn is_split_vote(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
         let counts = self.count_votes(votes);
         let votes_received: usize = counts.values().sum();
         let most_votes = counts.values().max().cloned().unwrap_or_default();
-        let n = self.members(self.gen).unwrap().len();
+        let n = self.members(self.gen)?.len();
         let outstanding_votes = n - votes_received;
         let predicted_votes = most_votes + outstanding_votes;
 
-        3 * votes_received > 2 * n && 3 * predicted_votes <= 2 * n
+        Ok(3 * votes_received > 2 * n && 3 * predicted_votes <= 2 * n)
     }
 
-    fn is_quorum(&self, votes: &BTreeSet<Vote>) -> bool {
+    fn is_quorum(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
         // TODO: quorum should always just be the largest 7 members
         let most_votes = self
             .count_votes(votes)
@@ -401,12 +401,12 @@ impl State {
             .max()
             .cloned()
             .unwrap_or_default();
-        let n = self.members(self.gen).unwrap().len();
+        let n = self.members(self.gen)?.len();
 
-        3 * most_votes > 2 * n
+        Ok(3 * most_votes > 2 * n)
     }
 
-    fn is_quorum_over_quorums(&self, votes: &BTreeSet<Vote>) -> bool {
+    fn is_quorum_over_quorums(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
         let winning_reconfigs = self.resolve_votes(votes);
 
         let count_of_quorums = votes
@@ -421,7 +421,7 @@ impl State {
             .filter(|v| v.is_quorum_ballot())
             .count();
 
-        3 * count_of_quorums > 2 * self.members(self.gen).unwrap().len()
+        Ok(3 * count_of_quorums > 2 * self.members(self.gen)?.len())
     }
 
     fn resolve_votes(&self, votes: &BTreeSet<Vote>) -> BTreeSet<Reconfig> {
@@ -435,11 +435,11 @@ impl State {
     }
 
     pub fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
-        let members = self.members(self.gen).unwrap();
+        let members = self.members(self.gen)?;
         if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig) {
             Err(Error::InvalidSignature)
-        } else if vote.gen <= self.gen || vote.gen > self.gen + 1 {
-            Err(Error::VoteNotForThisGeneration {
+        } else if vote.gen != self.gen + 1 {
+            Err(Error::VoteNotForNextGeneration {
                 vote_gen: vote.gen,
                 gen: self.gen,
                 pending_gen: self.pending_gen,
@@ -447,23 +447,21 @@ impl State {
         } else if !members.contains(&vote.voter) {
             Err(Error::VoteFromNonMember {
                 voter: vote.voter,
-                members: members,
+                members,
             })
         } else if self.votes.contains_key(&vote.voter)
             && !vote.supersedes(&self.votes[&vote.voter])
             && !self.votes[&vote.voter].supersedes(&vote)
         {
-            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote {
+            Err(Error::ExistingVoteIncompatibleWithNewVote {
                 vote: vote.clone(),
                 existing_vote: self.votes[&vote.voter].clone(),
             })
-        } else if vote.gen == self.gen + 1 && self.pending_gen == self.gen {
+        } else if self.pending_gen == self.gen {
             // We are starting a vote for the next generation
-            assert_eq!(self.votes, Default::default()); // we should not have any votes yet
             self.validate_ballot(vote.gen, &vote.ballot)
-        } else if self.pending_gen == self.gen + 1 && vote.gen == self.pending_gen {
+        } else {
             // This is a vote for this generation
-            assert_ne!(self.votes, Default::default(), "{:?} {:#?}", vote, self); // we should have at least one vote
 
             // Ensure that nobody is trying to change their reconfig's.
             let reconfigs: BTreeSet<(Actor, Reconfig)> = self
@@ -475,13 +473,10 @@ impl State {
 
             let voters: BTreeSet<Actor> = reconfigs.iter().map(|(actor, _)| *actor).collect();
             if voters.len() != reconfigs.len() {
-                assert!(voters.len() > reconfigs.len());
                 Err(Error::VoterChangedMind { reconfigs })
             } else {
                 self.validate_ballot(vote.gen, &vote.ballot)
             }
-        } else {
-            panic!("Unhandled case {:?} {:#?}", vote, self);
         }
     }
 
@@ -491,7 +486,7 @@ impl State {
             Ballot::Merge(votes) => {
                 for vote in votes.iter() {
                     if vote.gen != gen {
-                        return Err(Error::VoteNotForThisGeneration {
+                        return Err(Error::VoteNotForNextGeneration {
                             vote_gen: vote.gen,
                             gen: gen,
                             pending_gen: gen,
@@ -502,14 +497,14 @@ impl State {
                 Ok(())
             }
             Ballot::Quorum(votes) => {
-                let members = self.members(self.gen).unwrap();
+                let members = self.members(self.gen)?;
                 if !self.is_quorum(
                     &votes
                         .iter()
                         .flat_map(|v| v.unpack_votes())
                         .cloned()
                         .collect(),
-                ) {
+                )? {
                     Err(Error::QuorumBallotIsNotQuorum {
                         ballot: ballot.clone(),
                         members: members,
@@ -517,7 +512,7 @@ impl State {
                 } else {
                     for vote in votes.iter() {
                         if vote.gen != gen {
-                            return Err(Error::VoteNotForThisGeneration {
+                            return Err(Error::VoteNotForNextGeneration {
                                 vote_gen: vote.gen,
                                 gen: gen,
                                 pending_gen: gen,
@@ -532,7 +527,7 @@ impl State {
     }
 
     fn validate_reconfig(&self, reconfig: &Reconfig) -> Result<(), Error> {
-        let members = self.members(self.gen).unwrap();
+        let members = self.members(self.gen)?;
         match reconfig {
             Reconfig::Join(actor) => {
                 if members.contains(&actor) {
@@ -559,13 +554,13 @@ impl State {
         }
     }
 
-    fn broadcast<T: Serialize>(&self, vote: Vote) -> Vec<Packet<T>> {
-        self.members(self.gen)
-            .unwrap()
+    fn broadcast<T: Serialize>(&self, vote: Vote) -> Result<Vec<Packet<T>>, Error> {
+        Ok(self
+            .members(self.gen)?
             .iter()
             .cloned()
             .map(|member| self.send(vote.clone(), member))
-            .collect()
+            .collect())
     }
 
     fn send<T: Serialize>(&self, vote: Vote, dest: Actor) -> Packet<T> {
@@ -581,182 +576,6 @@ impl State {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct Net {
-    pub procs: Vec<State>,
-    pub reconfigs_by_gen: BTreeMap<Generation, BTreeSet<Reconfig>>,
-    pub members_at_gen: BTreeMap<Generation, BTreeSet<Actor>>,
-    pub packets: BTreeMap<Actor, Vec<Packet<()>>>,
-    pub delivered_packets: Vec<Packet<()>>,
-}
-
-impl Net {
-    pub fn with_procs(n: usize) -> Self {
-        let mut procs: Vec<_> = (0..n).into_iter().map(|_| State::default()).collect();
-        procs.sort_by_key(|p| p.id.actor());
-        Self {
-            procs,
-            ..Default::default()
-        }
-    }
-
-    pub fn genesis(&self) -> Actor {
-        assert!(!self.procs.is_empty());
-        self.procs[0].id.actor()
-    }
-
-    pub fn deliver_packet_from_source(&mut self, source: Actor) {
-        let packet = if let Some(packets) = self.packets.get_mut(&source) {
-            assert!(packets.len() > 0);
-            packets.remove(0)
-        } else {
-            return;
-        };
-
-        let dest = packet.dest;
-
-        assert_eq!(packet.source, source);
-
-        println!(
-            "delivering {:?}->{:?} {:#?}",
-            packet.source, packet.dest, packet
-        );
-
-        self.delivered_packets.push(packet.clone());
-
-        self.packets = self
-            .packets
-            .clone()
-            .into_iter()
-            .filter(|(_, queue)| !queue.is_empty())
-            .collect();
-
-        assert_eq!(packet.source, source);
-
-        let dest_proc_opt = self.procs.iter_mut().find(|p| p.id.actor() == packet.dest);
-
-        let dest_proc = match dest_proc_opt {
-            Some(proc) => proc,
-            None => {
-                println!("[NET] destination proc does not exist, dropping packet");
-                return;
-            }
-        };
-
-        let dest_members = dest_proc.members(dest_proc.gen).unwrap();
-        let vote = match packet.payload {
-            Payload::Membership(vote) => vote,
-            _ => panic!("Unexpected payload type"),
-        };
-
-        let resp = dest_proc.handle_vote(vote);
-        println!("[NET] resp: {:#?}", resp);
-        match resp {
-            Ok(resp_packets) => {
-                // A process only accepts a packet if it considers the sender a member
-                assert!(dest_members.contains(&source));
-
-                // TODO: inspect these packets
-                assert!(resp_packets
-                    .iter()
-                    .all(|p| p.source == dest_proc.id.actor()));
-                self.queue_packets(resp_packets);
-            }
-            Err(Error::VoteFromNonMember { voter, members }) => {
-                assert_eq!(voter, source, "{:?} not in {:?}", voter, members);
-                assert_eq!(members, dest_members.clone());
-                assert!(!dest_members.contains(&source));
-            }
-            Err(Error::VoteNotForThisGeneration {
-                vote_gen,
-                gen,
-                pending_gen,
-            }) => {
-                assert!(vote_gen <= gen || vote_gen > pending_gen);
-                assert_eq!(dest_proc.gen, gen);
-                assert_eq!(dest_proc.pending_gen, pending_gen);
-            }
-            Err(err) => {
-                panic!("Unexpected err: {:?} {:?}", err, self);
-            }
-        }
-
-        let proc = self.procs.iter().find(|p| p.id.actor() == dest).unwrap();
-        if !proc.faulty {
-            let (mut proc_members, gen) = (proc.members(proc.gen).unwrap().clone(), proc.gen);
-
-            let expected_members_at_gen = self
-                .members_at_gen
-                .entry(gen)
-                .or_insert(proc_members.clone());
-
-            assert_eq!(expected_members_at_gen, &mut proc_members);
-        }
-    }
-
-    pub fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet<()>>) {
-        for packet in packets {
-            self.packets.entry(packet.source).or_default().push(packet);
-        }
-    }
-
-    pub fn drain_queued_packets(&mut self) {
-        while self.packets.len() > 0 {
-            let source = self.packets.keys().next().unwrap().clone();
-            self.deliver_packet_from_source(source);
-        }
-    }
-
-    pub fn trust(&mut self, p: Actor, q: Actor) {
-        if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
-            proc.trust(q);
-        }
-    }
-
-    pub fn generate_msc(&self) -> String {
-        // See: http://www.mcternan.me.uk/mscgen/
-        let mut msc = String::from(
-            "
-msc {\n
-  hscale = \"2\";\n
-",
-        );
-        let procs = self
-            .procs
-            .iter()
-            .map(|p| p.id.actor())
-            .collect::<BTreeSet<_>>() // sort by actor id
-            .into_iter()
-            .map(|id| format!("{:?}", id))
-            .collect::<Vec<_>>()
-            .join(",");
-        msc.push_str(&procs);
-        msc.push_str(";\n");
-        for packet in self.delivered_packets.iter() {
-            msc.push_str(&format!(
-                "{}->{} [ label=\"{:?}\"];\n",
-                packet.source,
-                packet.dest,
-                match &packet.payload {
-                    Payload::Membership(v) => v,
-                    _ => panic!("invalid payload"),
-                }
-            ));
-        }
-
-        msc.push_str("}\n");
-
-        // Replace process identifiers with friendlier numbers
-        // 1, 2, 3 ... instead of i:3b2, i:7def, ...
-        for (idx, proc_id) in self.procs.iter().map(|p| p.id.actor()).enumerate() {
-            let proc_id_as_str = format!("{}", proc_id);
-            msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
-        }
-
-        msc
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +584,182 @@ mod tests {
 
     use crdts::quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 
+    #[derive(Default, Debug)]
+    pub struct Net {
+        pub procs: Vec<State>,
+        pub reconfigs_by_gen: BTreeMap<Generation, BTreeSet<Reconfig>>,
+        pub members_at_gen: BTreeMap<Generation, BTreeSet<Actor>>,
+        pub packets: BTreeMap<Actor, Vec<Packet<()>>>,
+        pub delivered_packets: Vec<Packet<()>>,
+    }
+
+    impl Net {
+        pub fn with_procs(n: usize) -> Self {
+            let mut procs: Vec<_> = (0..n).into_iter().map(|_| State::default()).collect();
+            procs.sort_by_key(|p| p.id.actor());
+            Self {
+                procs,
+                ..Default::default()
+            }
+        }
+
+        pub fn genesis(&self) -> Actor {
+            assert!(!self.procs.is_empty());
+            self.procs[0].id.actor()
+        }
+
+        pub fn deliver_packet_from_source(&mut self, source: Actor) {
+            let packet = if let Some(packets) = self.packets.get_mut(&source) {
+                assert!(packets.len() > 0);
+                packets.remove(0)
+            } else {
+                return;
+            };
+
+            let dest = packet.dest;
+
+            assert_eq!(packet.source, source);
+
+            println!(
+                "delivering {:?}->{:?} {:#?}",
+                packet.source, packet.dest, packet
+            );
+
+            self.delivered_packets.push(packet.clone());
+
+            self.packets = self
+                .packets
+                .clone()
+                .into_iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .collect();
+
+            assert_eq!(packet.source, source);
+
+            let dest_proc_opt = self.procs.iter_mut().find(|p| p.id.actor() == packet.dest);
+
+            let dest_proc = match dest_proc_opt {
+                Some(proc) => proc,
+                None => {
+                    println!("[NET] destination proc does not exist, dropping packet");
+                    return;
+                }
+            };
+
+            let dest_members = dest_proc.members(dest_proc.gen).unwrap();
+            let vote = match packet.payload {
+                Payload::Membership(vote) => vote,
+                _ => panic!("Unexpected payload type"),
+            };
+
+            let resp = dest_proc.handle_vote(vote);
+            println!("[NET] resp: {:#?}", resp);
+            match resp {
+                Ok(resp_packets) => {
+                    // A process only accepts a packet if it considers the sender a member
+                    assert!(dest_members.contains(&source));
+
+                    // TODO: inspect these packets
+                    assert!(resp_packets
+                        .iter()
+                        .all(|p| p.source == dest_proc.id.actor()));
+                    self.queue_packets(resp_packets);
+                }
+                Err(Error::VoteFromNonMember { voter, members }) => {
+                    assert_eq!(voter, source, "{:?} not in {:?}", voter, members);
+                    assert_eq!(members, dest_members.clone());
+                    assert!(!dest_members.contains(&source));
+                }
+                Err(Error::VoteNotForNextGeneration {
+                    vote_gen,
+                    gen,
+                    pending_gen,
+                }) => {
+                    assert!(vote_gen <= gen || vote_gen > pending_gen);
+                    assert_eq!(dest_proc.gen, gen);
+                    assert_eq!(dest_proc.pending_gen, pending_gen);
+                }
+                Err(err) => {
+                    panic!("Unexpected err: {:?} {:?}", err, self);
+                }
+            }
+
+            let proc = self.procs.iter().find(|p| p.id.actor() == dest).unwrap();
+            if !proc.faulty {
+                let (mut proc_members, gen) = (proc.members(proc.gen).unwrap().clone(), proc.gen);
+
+                let expected_members_at_gen = self
+                    .members_at_gen
+                    .entry(gen)
+                    .or_insert(proc_members.clone());
+
+                assert_eq!(expected_members_at_gen, &mut proc_members);
+            }
+        }
+
+        pub fn queue_packets(&mut self, packets: impl IntoIterator<Item = Packet<()>>) {
+            for packet in packets {
+                self.packets.entry(packet.source).or_default().push(packet);
+            }
+        }
+
+        pub fn drain_queued_packets(&mut self) {
+            while self.packets.len() > 0 {
+                let source = self.packets.keys().next().unwrap().clone();
+                self.deliver_packet_from_source(source);
+            }
+        }
+
+        pub fn trust(&mut self, p: Actor, q: Actor) {
+            if let Some(proc) = self.procs.iter_mut().find(|proc| proc.id.actor() == p) {
+                proc.trust(q);
+            }
+        }
+
+        pub fn generate_msc(&self) -> String {
+            // See: http://www.mcternan.me.uk/mscgen/
+            let mut msc = String::from(
+                "
+msc {\n
+  hscale = \"2\";\n
+",
+            );
+            let procs = self
+                .procs
+                .iter()
+                .map(|p| p.id.actor())
+                .collect::<BTreeSet<_>>() // sort by actor id
+                .into_iter()
+                .map(|id| format!("{:?}", id))
+                .collect::<Vec<_>>()
+                .join(",");
+            msc.push_str(&procs);
+            msc.push_str(";\n");
+            for packet in self.delivered_packets.iter() {
+                msc.push_str(&format!(
+                    "{} -> {} [ label=\"{:?}\"];\n",
+                    packet.source,
+                    packet.dest,
+                    match &packet.payload {
+                        Payload::Membership(v) => v,
+                        _ => panic!("invalid payload"),
+                    }
+                ));
+            }
+
+            msc.push_str("}\n");
+
+            // Replace process identifiers with friendlier numbers
+            // 1, 2, 3 ... instead of i:3b2, i:7def, ...
+            for (idx, proc_id) in self.procs.iter().map(|p| p.id.actor()).enumerate() {
+                let proc_id_as_str = format!("{}", proc_id);
+                msc = msc.replace(&proc_id_as_str, &format!("{}", idx + 1));
+            }
+
+            msc
+        }
+    }
+
     #[test]
     fn test_reject_changing_reconfig_when_one_is_in_progress() {
         let mut proc = State::default();
@@ -772,7 +767,7 @@ mod tests {
         assert!(proc.propose::<()>(Reconfig::Join(Actor::default())).is_ok());
         assert!(matches!(
             proc.propose::<()>(Reconfig::Join(Actor::default())),
-            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { .. })
+            Err(Error::ExistingVoteIncompatibleWithNewVote { .. })
         ));
     }
 
@@ -883,7 +878,7 @@ mod tests {
 
         assert_eq!(
             net.procs[0].handle_vote::<()>(vote),
-            Err(Error::VoteNotForThisGeneration {
+            Err(Error::VoteNotForNextGeneration {
                 vote_gen: 1,
                 gen: 1,
                 pending_gen: 1,
@@ -1148,7 +1143,7 @@ mod tests {
                             Err(Error::VoteFromNonMember { .. }) => {
                                 assert!(!q.members(q.gen).unwrap().contains(&q.id.actor()));
                             }
-                            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { vote, existing_vote }) => {
+                            Err(Error::ExistingVoteIncompatibleWithNewVote { vote, existing_vote }) => {
                                 // This proc has already committed to a vote this round
                                 assert_ne!(vote, existing_vote);
                                 assert_eq!(q.votes.get(&q.id.actor()), Some(&existing_vote));
@@ -1178,7 +1173,7 @@ mod tests {
                             Err(Error::VoteFromNonMember { .. }) => {
                                 assert!(!q.members(q.gen).unwrap().contains(&q.id.actor()));
                             }
-                            Err(Error::ExistingVoteFromVoterIsNotPresentInNewVote { vote, existing_vote }) => {
+                            Err(Error::ExistingVoteIncompatibleWithNewVote { vote, existing_vote }) => {
                                 // This proc has already committed to a vote
                                 assert_ne!(vote, existing_vote);
                                 assert_eq!(q.votes.get(&q.id.actor()), Some(&existing_vote));

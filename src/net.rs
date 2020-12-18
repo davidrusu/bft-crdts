@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Write;
 
 use crate::actor::Actor;
-use crate::deterministic_secure_broadcast::{self, SecureBroadcastProc};
+use crate::deterministic_secure_broadcast::SecureBroadcastProc;
 use crate::packet::Packet;
 use crate::traits::SecureBroadcastAlgorithm;
 
