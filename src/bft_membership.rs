@@ -13,7 +13,7 @@ pub struct State {
     pub gen: Generation,
     pub pending_gen: Generation,
     trusted_members: BTreeSet<Actor>,
-    pub history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving quorum
+    pub history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving super majority
     pub votes: BTreeMap<Actor, Vote>,
     pub faulty: bool,
 }
@@ -37,7 +37,7 @@ impl std::fmt::Debug for Reconfig {
 pub enum Ballot {
     Propose(Reconfig),
     Merge(BTreeSet<Vote>),
-    Quorum(BTreeSet<Vote>),
+    SuperMajority(BTreeSet<Vote>),
 }
 
 impl std::fmt::Debug for Ballot {
@@ -45,7 +45,7 @@ impl std::fmt::Debug for Ballot {
         match self {
             Ballot::Propose(r) => write!(f, "P({:?})", r),
             Ballot::Merge(votes) => write!(f, "M{:?}", votes),
-            Ballot::Quorum(votes) => write!(f, "Q{:?}", votes),
+            Ballot::SuperMajority(votes) => write!(f, "SM{:?}", votes),
         }
     }
 }
@@ -72,7 +72,7 @@ impl Ballot {
         match &self {
             Ballot::Propose(_) => self.clone(), // already in simplest form
             Ballot::Merge(votes) => Ballot::Merge(simplify_votes(&votes)),
-            Ballot::Quorum(votes) => Ballot::Quorum(simplify_votes(&votes)),
+            Ballot::SuperMajority(votes) => Ballot::SuperMajority(simplify_votes(&votes)),
         }
     }
 }
@@ -92,14 +92,14 @@ impl std::fmt::Debug for Vote {
 }
 
 impl Vote {
-    fn is_quorum_ballot(&self) -> bool {
-        matches!(self.ballot, Ballot::Quorum(_))
+    fn is_super_majority_ballot(&self) -> bool {
+        matches!(self.ballot, Ballot::SuperMajority(_))
     }
 
     fn unpack_votes(&self) -> BTreeSet<&Vote> {
         match &self.ballot {
             Ballot::Propose(_) => std::iter::once(self).collect(),
-            Ballot::Merge(votes) | Ballot::Quorum(votes) => std::iter::once(self)
+            Ballot::Merge(votes) | Ballot::SuperMajority(votes) => std::iter::once(self)
                 .chain(votes.iter().flat_map(|v| v.unpack_votes()))
                 .collect(),
         }
@@ -108,7 +108,7 @@ impl Vote {
     fn reconfigs(&self) -> BTreeSet<(Actor, Reconfig)> {
         match &self.ballot {
             Ballot::Propose(reconfig) => vec![(self.voter, reconfig.clone())].into_iter().collect(),
-            Ballot::Merge(votes) | Ballot::Quorum(votes) => {
+            Ballot::Merge(votes) | Ballot::SuperMajority(votes) => {
                 votes.iter().flat_map(|v| v.reconfigs()).collect()
             }
         }
@@ -120,7 +120,7 @@ impl Vote {
         } else {
             match &self.ballot {
                 Ballot::Propose(_) => false,
-                Ballot::Merge(votes) | Ballot::Quorum(votes) => {
+                Ballot::Merge(votes) | Ballot::SuperMajority(votes) => {
                     votes.iter().any(|v| v.supersedes(vote))
                 }
             }
@@ -162,7 +162,7 @@ pub enum Error {
         vote: Vote,
         existing_vote: Vote,
     },
-    QuorumBallotIsNotQuorum {
+    SuperMajorityBallotIsNotSuperMajority {
         ballot: Ballot,
         members: BTreeSet<Actor>,
     },
@@ -183,7 +183,7 @@ impl State {
 
         for (history_gen, vote) in self.history.iter() {
             let votes = match &vote.ballot {
-                Ballot::Quorum(votes) => votes,
+                Ballot::SuperMajority(votes) => votes,
                 _ => {
                     return Err(Error::InvalidVoteInHistory(vote.clone()));
                 }
@@ -239,8 +239,8 @@ impl State {
             return self.cast_vote(merge_vote);
         }
 
-        if self.is_quorum_over_quorums(&self.votes.values().cloned().collect())? {
-            println!("[DSB] Detected quorum over quorum");
+        if self.is_super_majority_over_super_majorities(&self.votes.values().cloned().collect())? {
+            println!("[DSB] Detected super majority over super majorities");
             let we_were_a_member_during_this_generation =
                 self.members(self.gen)?.contains(&self.id.actor());
 
@@ -250,7 +250,7 @@ impl State {
             self.gen = self.pending_gen;
 
             // store a proof of what the network decided in our history so that we can onboard future procs.
-            let ballot = Ballot::Quorum(self.votes.values().cloned().collect()).simplify();
+            let ballot = Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify();
             let vote = Vote {
                 voter: self.id.actor(),
                 sig: self.id.sign((&ballot, &self.gen)),
@@ -289,41 +289,41 @@ impl State {
             }
         }
 
-        if self.is_quorum(&self.votes.values().cloned().collect())? {
-            println!("[DSB] Detected quorum");
+        if self.is_super_majority(&self.votes.values().cloned().collect())? {
+            println!("[DSB] Detected super majority");
 
             if let Some(our_vote) = self.votes.get(&self.id.actor()) {
                 // We voted during this generation.
 
-                // We may have committed to some reconfigs that is not part of this quorum.
-                // This happens when the network was able to form quorum without our vote.
+                // We may have committed to some reconfigs that is not part of this super majority.
+                // This happens when the network was able to form super majority without our vote.
                 // We can not change our vote since all we know is that a subset of the network saw
-                // quorum. It could still be the case that two disjoint subsets of the network
-                // see different quorums, this case will be resolved by the split vote detection
+                // super majority. It could still be the case that two disjoint subsets of the network
+                // see different super majorities, this case will be resolved by the split vote detection
                 // as more packets are delivered.
 
-                let quorum_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
+                let super_majority_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
 
-                let we_have_comitted_to_reconfigs_not_in_quorum = self
+                let we_have_comitted_to_reconfigs_not_in_super_majority = self
                     .resolve_votes(&our_vote.unpack_votes().into_iter().cloned().collect())
                     .into_iter()
-                    .filter(|r| !quorum_reconfigs.contains(r))
+                    .filter(|r| !super_majority_reconfigs.contains(r))
                     .next()
                     .is_some();
 
-                if we_have_comitted_to_reconfigs_not_in_quorum {
-                    println!("[DSB] We have committed to reconfigs that the quorum has not seen, waiting till we either have a split vote or Q/Q");
+                if we_have_comitted_to_reconfigs_not_in_super_majority {
+                    println!("[DSB] We have committed to reconfigs that the super majority has not seen, waiting till we either have a split vote or SM/SM");
                     return Ok(vec![]);
-                } else if our_vote.is_quorum_ballot() {
-                    println!("[DSB] We've already sent a quorum, waiting till we either have a split vote or Q/Q");
+                } else if our_vote.is_super_majority_ballot() {
+                    println!("[DSB] We've already sent a super majority, waiting till we either have a split vote or SM / SM");
                     return Ok(vec![]);
                 }
             }
 
-            println!("[DSB] broadcasting quorum");
+            println!("[DSB] broadcasting super majority");
             let vote = self.build_vote(
                 self.pending_gen,
-                Ballot::Quorum(self.votes.values().cloned().collect()).simplify(),
+                Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify(),
             );
             return self.cast_vote(vote);
         }
@@ -393,8 +393,8 @@ impl State {
         Ok(3 * votes_received > 2 * n && 3 * predicted_votes <= 2 * n)
     }
 
-    fn is_quorum(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
-        // TODO: quorum should always just be the largest 7 members
+    fn is_super_majority(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
+        // TODO: super majority should always just be the largest 7 members
         let most_votes = self
             .count_votes(votes)
             .values()
@@ -406,10 +406,10 @@ impl State {
         Ok(3 * most_votes > 2 * n)
     }
 
-    fn is_quorum_over_quorums(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
+    fn is_super_majority_over_super_majorities(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
         let winning_reconfigs = self.resolve_votes(votes);
 
-        let count_of_quorums = votes
+        let count_of_super_majorities = votes
             .iter()
             .filter(|v| {
                 v.reconfigs()
@@ -418,10 +418,10 @@ impl State {
                     .collect::<BTreeSet<_>>()
                     == winning_reconfigs
             })
-            .filter(|v| v.is_quorum_ballot())
+            .filter(|v| v.is_super_majority_ballot())
             .count();
 
-        Ok(3 * count_of_quorums > 2 * self.members(self.gen)?.len())
+        Ok(3 * count_of_super_majorities > 2 * self.members(self.gen)?.len())
     }
 
     fn resolve_votes(&self, votes: &BTreeSet<Vote>) -> BTreeSet<Reconfig> {
@@ -496,16 +496,16 @@ impl State {
                 }
                 Ok(())
             }
-            Ballot::Quorum(votes) => {
+            Ballot::SuperMajority(votes) => {
                 let members = self.members(self.gen)?;
-                if !self.is_quorum(
+                if !self.is_super_majority(
                     &votes
                         .iter()
                         .flat_map(|v| v.unpack_votes())
                         .cloned()
                         .collect(),
                 )? {
-                    Err(Error::QuorumBallotIsNotQuorum {
+                    Err(Error::SuperMajorityBallotIsNotSuperMajority {
                         ballot: ballot.clone(),
                         members: members,
                     })
@@ -1018,7 +1018,7 @@ msc {\n
         }
 
         let max_gen = procs_by_gen.keys().last().unwrap();
-        // The last gen should have at least a quorum of nodes
+        // The last gen should have at least a super majority of nodes
         let current_members: BTreeSet<_> =
             procs_by_gen[max_gen].iter().map(|p| p.id.actor()).collect();
 
@@ -1104,7 +1104,7 @@ msc {\n
 
     quickcheck! {
         fn prop_interpreter(n: usize, instructions: Vec<Instruction>) -> TestResult {
-            fn quorum(m: usize, n: usize) -> bool {
+            fn super_majority(m: usize, n: usize) -> bool {
                 3 * m > 2 * n
             }
             let n = n.min(7);
@@ -1250,8 +1250,8 @@ msc {\n
                 assert_ne!(reconfigs_applied, Default::default());
             }
 
-            // The last gen should have at least a quorum of nodes
-                    // The last gen should have at least a quorum of nodes
+            // The last gen should have at least a super majority of nodes
+                    // The last gen should have at least a super majority of nodes
             // let current_members: BTreeSet<_> =
             //     procs_by_gen[max_gen].iter().map(|p| p.id.actor()).collect();
 
@@ -1260,7 +1260,7 @@ msc {\n
             // }
 
         let proc_at_max_gen = procs_by_gen[max_gen].iter().next().unwrap();
-            assert!(quorum(procs_by_gen[max_gen].len(), proc_at_max_gen.members(*max_gen).unwrap().len()), "{:?}", procs_by_gen);
+            assert!(super_majority(procs_by_gen[max_gen].len(), proc_at_max_gen.members(*max_gen).unwrap().len()), "{:?}", procs_by_gen);
 
             // assert_eq!(net.pending_reconfigs, Default::default());
 
