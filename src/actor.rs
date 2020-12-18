@@ -72,10 +72,10 @@ impl SigningActor {
         Actor(self.0.public)
     }
 
-    pub fn sign(&self, blob: impl Serialize) -> Sig {
-        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
+    pub fn sign(&self, blob: impl Serialize) -> Result<Sig, bincode::Error> {
+        let blob_bytes = bincode::serialize(&blob)?;
         let blob_sig = self.0.sign(&blob_bytes);
-        Sig(blob_sig)
+        Ok(Sig(blob_sig))
     }
 }
 

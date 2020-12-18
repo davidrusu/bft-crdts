@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+use bincode;
+use serde::{Deserialize, Serialize};
 
 use crate::actor::{Actor, Sig, SigningActor};
 use crate::packet::{Packet, Payload};
@@ -128,7 +130,7 @@ impl Vote {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Error {
     InvalidSignature,
     WrongDestination {
@@ -168,6 +170,13 @@ pub enum Error {
     },
     InvalidGeneration(Generation),
     InvalidVoteInHistory(Vote),
+    Encoding(bincode::Error),
+}
+
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Self {
+        Self::Encoding(err)
+    }
 }
 
 impl State {
@@ -204,7 +213,7 @@ impl State {
     }
 
     pub fn propose<T: Serialize>(&mut self, reconfig: Reconfig) -> Result<Vec<Packet<T>>, Error> {
-        let vote = self.build_vote(self.gen + 1, Ballot::Propose(reconfig));
+        let vote = self.build_vote(self.gen + 1, Ballot::Propose(reconfig))?;
         self.cast_vote(vote)
     }
 
@@ -219,7 +228,7 @@ impl State {
             let merge_vote = self.build_vote(
                 self.pending_gen,
                 Ballot::Merge(self.votes.values().cloned().collect()).simplify(),
-            );
+            )?;
 
             if let Some(our_vote) = self.votes.get(&self.id.actor()) {
                 let reconfigs_we_voted_for: BTreeSet<_> =
@@ -253,7 +262,7 @@ impl State {
             let ballot = Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify();
             let vote = Vote {
                 voter: self.id.actor(),
-                sig: self.id.sign((&ballot, &self.gen)),
+                sig: self.id.sign((&ballot, &self.gen))?,
                 gen: self.gen,
                 ballot,
             };
@@ -272,18 +281,16 @@ impl State {
                     })
                     .collect();
 
-                let onboarding_packets = new_members
+                return new_members
                     .into_iter()
                     .flat_map(|p| {
                         // deliver the history in order from gen=1 onwards
                         self.history
                             .iter() // history is a BTreeSet, .iter() is ordered by generation
                             .map(|(_gen, membership_proof)| self.send(membership_proof.clone(), p))
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<Result<_, _>>>()
                     })
-                    .collect();
-
-                return Ok(onboarding_packets);
+                    .collect::<Result<Vec<_>, Error>>();
             } else {
                 return Ok(vec![]);
             }
@@ -302,7 +309,8 @@ impl State {
                 // see different super majorities, this case will be resolved by the split vote detection
                 // as more packets are delivered.
 
-                let super_majority_reconfigs = self.resolve_votes(&self.votes.values().cloned().collect());
+                let super_majority_reconfigs =
+                    self.resolve_votes(&self.votes.values().cloned().collect());
 
                 let we_have_comitted_to_reconfigs_not_in_super_majority = self
                     .resolve_votes(&our_vote.unpack_votes().into_iter().cloned().collect())
@@ -324,7 +332,7 @@ impl State {
             let vote = self.build_vote(
                 self.pending_gen,
                 Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify(),
-            );
+            )?;
             return self.cast_vote(vote);
         }
 
@@ -332,20 +340,20 @@ impl State {
         // If we have not yet voted, this is where we would contribute our vote
         if !self.votes.contains_key(&self.id.actor()) {
             // vote with all pending reconfigs
-            let vote = self.build_vote(self.pending_gen, vote.ballot.clone());
+            let vote = self.build_vote(self.pending_gen, vote.ballot.clone())?;
             return self.cast_vote(vote);
         }
 
         Ok(vec![])
     }
 
-    fn build_vote(&self, gen: Generation, ballot: Ballot) -> Vote {
-        Vote {
+    fn build_vote(&self, gen: Generation, ballot: Ballot) -> Result<Vote, Error> {
+        Ok(Vote {
             voter: self.id.actor(),
-            sig: self.id.sign((&ballot, &gen)),
+            sig: self.id.sign((&ballot, &gen))?,
             ballot,
             gen,
-        }
+        })
     }
 
     fn cast_vote<T: Serialize>(&mut self, vote: Vote) -> Result<Vec<Packet<T>>, Error> {
@@ -406,7 +414,10 @@ impl State {
         Ok(3 * most_votes > 2 * n)
     }
 
-    fn is_super_majority_over_super_majorities(&self, votes: &BTreeSet<Vote>) -> Result<bool, Error> {
+    fn is_super_majority_over_super_majorities(
+        &self,
+        votes: &BTreeSet<Vote>,
+    ) -> Result<bool, Error> {
         let winning_reconfigs = self.resolve_votes(votes);
 
         let count_of_super_majorities = votes
@@ -555,24 +566,23 @@ impl State {
     }
 
     fn broadcast<T: Serialize>(&self, vote: Vote) -> Result<Vec<Packet<T>>, Error> {
-        Ok(self
-            .members(self.gen)?
+        self.members(self.gen)?
             .iter()
             .cloned()
             .map(|member| self.send(vote.clone(), member))
-            .collect())
+            .collect()
     }
 
-    fn send<T: Serialize>(&self, vote: Vote, dest: Actor) -> Packet<T> {
+    fn send<T: Serialize>(&self, vote: Vote, dest: Actor) -> Result<Packet<T>, Error> {
         let source = self.id.actor();
         let payload = Payload::Membership(vote);
-        let sig = self.id.sign(&payload);
-        Packet {
+        let sig = self.id.sign(&payload)?;
+        Ok(Packet {
             source,
             dest,
             payload,
             sig,
-        }
+        })
     }
 }
 
@@ -794,12 +804,10 @@ msc {\n
         };
         proc.trust(proc.id.actor());
 
-        assert_eq!(
+        assert!(matches!(
             proc.propose::<()>(Reconfig::Join(Actor::default())),
-            Err(Error::MembersAtCapacity {
-                members: proc.members(proc.gen).unwrap()
-            })
-        );
+            Err(Error::MembersAtCapacity { .. })
+        ));
 
         assert!(proc
             .propose::<()>(Reconfig::Leave(
@@ -817,14 +825,10 @@ msc {\n
         proc.trust(proc.id.actor());
 
         let member = proc.members(proc.gen).unwrap().into_iter().next().unwrap();
-
-        assert_eq!(
+        assert!(matches!(
             proc.propose::<()>(Reconfig::Join(member)),
-            Err(Error::JoinRequestForExistingMember {
-                requester: member,
-                members: proc.members(proc.gen).unwrap(),
-            })
-        );
+            Err(Error::JoinRequestForExistingMember { .. })
+        ));
     }
 
     #[test]
@@ -836,13 +840,10 @@ msc {\n
         proc.trust(proc.id.actor());
 
         let leaving_actor = Actor::default();
-        assert_eq!(
+        assert!(matches!(
             proc.propose::<()>(Reconfig::Leave(leaving_actor)),
-            Err(Error::LeaveRequestForNonMember {
-                requester: leaving_actor,
-                members: proc.members(proc.gen).unwrap(),
-            })
-        );
+            Err(Error::LeaveRequestForNonMember { .. })
+        ));
     }
 
     #[test]
@@ -876,14 +877,14 @@ msc {\n
             _ => panic!("Unexpected payload type"),
         };
 
-        assert_eq!(
+        assert!(matches!(
             net.procs[0].handle_vote::<()>(vote),
             Err(Error::VoteNotForNextGeneration {
                 vote_gen: 1,
                 gen: 1,
                 pending_gen: 1,
             })
-        );
+        ));
     }
 
     #[test]
@@ -892,7 +893,7 @@ msc {\n
         let ballot = Ballot::Propose(Reconfig::Join(Default::default()));
         let gen = proc.gen + 1;
         let voter = Default::default();
-        let sig = SigningActor::default().sign((&ballot, &gen));
+        let sig = SigningActor::default().sign((&ballot, &gen)).unwrap();
         let resp = proc.handle_vote::<()>(Vote {
             ballot,
             gen,
@@ -900,7 +901,7 @@ msc {\n
             sig,
         });
 
-        assert_eq!(resp, Err(Error::InvalidSignature));
+        assert!(matches!(resp, Err(Error::InvalidSignature)));
     }
 
     #[test]
@@ -1301,33 +1302,30 @@ msc {\n
             let valid_res = proc.validate_reconfig(&reconfig);
             match reconfig {
                 Reconfig::Join(actor) => {
-                    if proc.members(proc.gen).unwrap().contains(&actor) {
-                        assert_eq!(
+                    let proc_members = proc.members(proc.gen).unwrap();
+                    if proc_members.contains(&actor) {
+                        assert!(matches!(
                             valid_res,
-                            Err(Error::JoinRequestForExistingMember {
-                                requester: actor,
-                                members: proc.members(proc.gen).unwrap()
+                            Err(Error::JoinRequestForExistingMember { ..
                             })
-                        );
+                        ));
                     } else if members + 1 == 7 {
-                        assert_eq!(
+                        assert!(matches!(
                             valid_res,
-                            Err(Error::MembersAtCapacity {
-                                members: proc.members(proc.gen).unwrap()
-                            })
+                            Err(Error::MembersAtCapacity { ..
+                            }))
                         );
                     } else {
-                        assert_eq!(valid_res, Ok(()));
+                        assert!(valid_res.is_ok());
                     }
                 }
                 Reconfig::Leave(actor) => {
+            let expected_members: BTreeSet<_> = trusted_actors.into_iter().collect();
                     if proc.members(proc.gen).unwrap().contains(&actor) {
-                        assert_eq!(valid_res, Ok(()));
+                        assert!(valid_res.is_ok());
                     } else {
-                        assert_eq!(valid_res, Err(Error::LeaveRequestForNonMember {
-                            requester: actor,
-                            members: trusted_actors.into_iter().collect(),
-                        }));
+                        assert!(matches!(valid_res, Err(Error::LeaveRequestForNonMember {..
+                        })));
 
                     }
                 }

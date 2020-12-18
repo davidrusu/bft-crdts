@@ -87,7 +87,8 @@ mod tests {
         // initiating process 'a' broadcasts requests for validation
         let req_for_valid_packets = net
             .on_proc(&a, |p| {
-                p.exec_algo_op(|orswot| Some(orswot.add(value_to_add))).unwrap()
+                p.exec_algo_op(|orswot| Some(orswot.add(value_to_add)))
+                    .unwrap()
             })
             .unwrap();
 

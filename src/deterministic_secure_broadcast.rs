@@ -11,12 +11,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum Error {
-    Membership(bft_membership::Error)
+    Membership(bft_membership::Error),
+    Encoding(bincode::Error),
+}
+
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Self {
+        Self::Encoding(err)
+    }
 }
 
 impl From<bft_membership::Error> for Error {
     fn from(err: bft_membership::Error) -> Self {
-	Self::Membership(err)
+        Self::Membership(err)
     }
 }
 
@@ -107,7 +114,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     pub fn peers(&self) -> Result<BTreeSet<Actor>, Error> {
-        self.membership.members(self.membership.gen).map_err(Error::Membership)
+        self.membership
+            .members(self.membership.gen)
+            .map_err(Error::Membership)
     }
 
     pub fn trust_peer(&mut self, peer: Actor) {
@@ -142,7 +151,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.algo.sync_from(state.algo_state);
     }
 
-    pub fn exec_algo_op(&self, f: impl FnOnce(&A) -> Option<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
+    pub fn exec_algo_op(
+        &self,
+        f: impl FnOnce(&A) -> Option<A::Op>,
+    ) -> Result<Vec<Packet<A::Op>>, Error> {
         if let Some(op) = f(&self.algo) {
             self.exec_op(op)
         } else {
@@ -180,11 +192,17 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn process_packet(&mut self, packet: Packet<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
         match packet.payload {
             Payload::SecureBroadcast(op) => self.process_secure_broadcast_op(packet.source, op),
-            Payload::Membership(vote) => self.membership.handle_vote(vote).map_err(Error::Membership),
+            Payload::Membership(vote) => {
+                self.membership.handle_vote(vote).map_err(Error::Membership)
+            }
         }
     }
 
-    fn process_secure_broadcast_op(&mut self, source: Actor, op: Op<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
+    fn process_secure_broadcast_op(
+        &mut self,
+        source: Actor,
+        op: Op<A::Op>,
+    ) -> Result<Vec<Packet<A::Op>>, Error> {
         match op {
             Op::RequestValidation { msg } => {
                 println!("[DSB] request for validation");
@@ -192,9 +210,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 // NOTE: we do not need to store this message, it will be sent back to us
                 // with the proof of agreement. Our signature will prevent tampering.
-                let sig = self.membership.id.sign(&msg);
+                let sig = self.membership.id.sign(&msg)?;
                 let validation = Op::SignedValidated { msg, sig };
-                Ok(vec![self.send(source, validation)])
+                Ok(vec![self.send(source, validation)?])
             }
             Op::SignedValidated { msg, sig } => {
                 println!("[DSB] signed validated");
@@ -207,7 +225,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 // we don't want to re-broadcast a proof if we've already reached quorum
                 // hence we check that (num_sigs - 1) was not quorum
-                if self.quorum(num_signatures, msg.gen)? && !self.quorum(num_signatures - 1, msg.gen)?
+                if self.quorum(num_signatures, msg.gen)?
+                    && !self.quorum(num_signatures - 1, msg.gen)?
                 {
                     println!("[DSB] we have quorum over msg, sending proof to network");
                     // We have quorum, broadcast proof of agreement to network
@@ -218,9 +237,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     // e.g. this happens if we request to join the network.
                     let recipients = &self.membership.members(msg.gen).unwrap()
                         | &vec![self.actor()].into_iter().collect();
-                    let packets = self.broadcast(&Op::ProofOfAgreement { msg, proof }, recipients);
-
-                    Ok(packets)
+                    self.broadcast(&Op::ProofOfAgreement { msg, proof }, recipients)
                 } else {
                     Ok(vec![])
                 }
@@ -280,7 +297,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn validate_secure_broadcast_op(&self, from: Actor, op: &Op<A::Op>) -> Result<bool, Error> {
-
         let validation_tests = match op {
             Op::RequestValidation { msg } => vec![
                 (
@@ -317,34 +333,34 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 ),
             ],
             Op::ProofOfAgreement { msg, proof } => {
-	        let msg_members = self.membership.members(msg.gen)?;
-		vec![
-                (
-                    self.delivered.inc(from) == msg.dot,
-                    format!(
-                        "either already delivered or out of order msg: {:?} != {:?}",
-                        self.delivered.inc(from),
-                        msg.dot
+                let msg_members = self.membership.members(msg.gen)?;
+                vec![
+                    (
+                        self.delivered.inc(from) == msg.dot,
+                        format!(
+                            "either already delivered or out of order msg: {:?} != {:?}",
+                            self.delivered.inc(from),
+                            msg.dot
+                        ),
                     ),
-                ),
-                (
-                    self.quorum(proof.len(), msg.gen)?,
-                    "not enough signatures for quorum".to_string(),
-                ),
-                (
-                    proof.iter().all(|(signatory, _sig)| {
-			msg_members.contains(&signatory)
-                    }),
-                    "proof contains signature(s) from unknown peer(s)".to_string(),
-                ),
-                (
-                    proof
-                        .iter()
-                        .all(|(signatory, sig)| signatory.verify(&msg, &sig)),
-                    "proof contains invalid signature(s)".to_string(),
-                ),
-		]
-	    },
+                    (
+                        self.quorum(proof.len(), msg.gen)?,
+                        "not enough signatures for quorum".to_string(),
+                    ),
+                    (
+                        proof
+                            .iter()
+                            .all(|(signatory, _sig)| msg_members.contains(&signatory)),
+                        "proof contains signature(s) from unknown peer(s)".to_string(),
+                    ),
+                    (
+                        proof
+                            .iter()
+                            .all(|(signatory, sig)| signatory.verify(&msg, &sig)),
+                        "proof contains invalid signature(s)".to_string(),
+                    ),
+                ]
+            }
         };
 
         Ok(validation_tests
@@ -364,14 +380,18 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         };
 
         println!("[DSB] {} initiating bft for msg {:?}", self.actor(), msg);
-        Ok(self.broadcast(&Op::RequestValidation { msg }, self.peers()?))
+        self.broadcast(&Op::RequestValidation { msg }, self.peers()?)
     }
 
     fn quorum(&self, n: usize, gen: Generation) -> Result<bool, Error> {
         Ok(n * 3 > self.membership.members(gen)?.len() * 2)
     }
 
-    fn broadcast(&self, op: &Op<A::Op>, targets: BTreeSet<Actor>) -> Vec<Packet<A::Op>> {
+    fn broadcast(
+        &self,
+        op: &Op<A::Op>,
+        targets: BTreeSet<Actor>,
+    ) -> Result<Vec<Packet<A::Op>>, Error> {
         println!("[DSB] broadcasting {}->{:?}", self.actor(), targets);
 
         targets
@@ -380,14 +400,14 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .collect()
     }
 
-    fn send(&self, dest: Actor, op: Op<A::Op>) -> Packet<A::Op> {
+    fn send(&self, dest: Actor, op: Op<A::Op>) -> Result<Packet<A::Op>, Error> {
         let payload = Payload::SecureBroadcast(op);
-        let sig = self.membership.id.sign(&payload);
-        Packet {
+        let sig = self.membership.id.sign(&payload)?;
+        Ok(Packet {
             source: self.actor(),
             dest,
             payload,
             sig,
-        }
+        })
     }
 }

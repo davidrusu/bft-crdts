@@ -31,7 +31,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             .iter()
             .map(|proc| {
                 proc.peers()
-		    .unwrap()
+                    .unwrap()
                     .iter()
                     .flat_map(|peer| self.proc_from_actor(peer))
                     .filter(|peer_proc| peer_proc.peers().unwrap().contains(&proc.actor()))
@@ -94,7 +94,11 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         // TODO: this should be done through a message passing interface.
         println!("[NET] anti-entropy");
 
-        let peer_map: HashMap<_, _> = self.procs.iter().map(|p| (p.actor(), p.peers().unwrap())).collect();
+        let peer_map: HashMap<_, _> = self
+            .procs
+            .iter()
+            .map(|p| (p.actor(), p.peers().unwrap()))
+            .collect();
         for (proc, peers) in peer_map {
             for peer in peers {
                 let peer_state = self.proc_from_actor(&peer).unwrap().state();

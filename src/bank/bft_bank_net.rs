@@ -22,7 +22,8 @@ impl Net<Bank> {
         initial_balance: Money,
     ) -> Option<Vec<Packet<Op>>> {
         self.on_proc(&initiating_proc, |p| {
-            p.exec_algo_op(|bank| Some(bank.open_account(bank_owner, initial_balance))).unwrap()
+            p.exec_algo_op(|bank| Some(bank.open_account(bank_owner, initial_balance)))
+                .unwrap()
         })
     }
 
@@ -34,7 +35,8 @@ impl Net<Bank> {
         amount: Money,
     ) -> Option<Vec<Packet<Op>>> {
         self.on_proc(&initiating_proc, |p| {
-            p.exec_algo_op(|bank| bank.transfer(from, to, amount)).unwrap()
+            p.exec_algo_op(|bank| bank.transfer(from, to, amount))
+                .unwrap()
         })
     }
 }
