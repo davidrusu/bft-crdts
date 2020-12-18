@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 pub struct Actor(pub PublicKey);
 
 impl Actor {
-    pub fn verify(&self, blob: impl Serialize, sig: &Sig) -> bool {
-        let blob_bytes = bincode::serialize(&blob).expect("Failed to serialize");
-        self.0.verify(&blob_bytes, &sig.0).is_ok()
+    pub fn verify(&self, blob: impl Serialize, sig: &Sig) -> Result<bool, bincode::Error> {
+        let blob_bytes = bincode::serialize(&blob)?;
+        Ok(self.0.verify(&blob_bytes, &sig.0).is_ok())
     }
 }
 

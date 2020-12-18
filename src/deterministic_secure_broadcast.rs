@@ -264,7 +264,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn validate_packet(&self, packet: &Packet<A::Op>) -> Result<bool, Error> {
-        if !packet.source.verify(&packet.payload, &packet.sig) {
+        if !packet.source.verify(&packet.payload, &packet.sig)? {
             println!(
                 "[DSB/SIG] Msg failed signature verification {}->{}",
                 packet.source,
@@ -324,7 +324,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             ],
             Op::SignedValidated { msg, sig } => vec![
                 (
-                    from.verify(&msg, sig),
+                    from.verify(&msg, sig)?,
                     "failed sig verification".to_string(),
                 ),
                 (
@@ -356,7 +356,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     (
                         proof
                             .iter()
-                            .all(|(signatory, sig)| signatory.verify(&msg, &sig)),
+                            .map(|(signatory, sig)| signatory.verify(&msg, &sig))
+			    .collect::<Result<Vec<bool>, _>>()?
+			    .into_iter().all(|v| v),
                         "proof contains invalid signature(s)".to_string(),
                     ),
                 ]

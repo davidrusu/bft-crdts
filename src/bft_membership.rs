@@ -447,7 +447,7 @@ impl State {
 
     pub fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
         let members = self.members(self.gen)?;
-        if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig) {
+        if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig)? {
             Err(Error::InvalidSignature)
         } else if vote.gen != self.gen + 1 {
             Err(Error::VoteNotForNextGeneration {
