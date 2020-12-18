@@ -1300,32 +1300,22 @@ msc {\n
             };
 
             let valid_res = proc.validate_reconfig(&reconfig);
+            let proc_members = proc.members(proc.gen).unwrap();
             match reconfig {
                 Reconfig::Join(actor) => {
-                    let proc_members = proc.members(proc.gen).unwrap();
                     if proc_members.contains(&actor) {
-                        assert!(matches!(
-                            valid_res,
-                            Err(Error::JoinRequestForExistingMember { ..
-                            })
-                        ));
+                        assert!(matches!(valid_res, Err(Error::JoinRequestForExistingMember {..})));
                     } else if members + 1 == 7 {
-                        assert!(matches!(
-                            valid_res,
-                            Err(Error::MembersAtCapacity { ..
-                            }))
-                        );
+                        assert!(matches!(valid_res, Err(Error::MembersAtCapacity {..})));
                     } else {
                         assert!(valid_res.is_ok());
                     }
                 }
                 Reconfig::Leave(actor) => {
-            let expected_members: BTreeSet<_> = trusted_actors.into_iter().collect();
-                    if proc.members(proc.gen).unwrap().contains(&actor) {
+                    if proc_members.contains(&actor) {
                         assert!(valid_res.is_ok());
                     } else {
-                        assert!(matches!(valid_res, Err(Error::LeaveRequestForNonMember {..
-                        })));
+                        assert!(matches!(valid_res, Err(Error::LeaveRequestForNonMember {..})));
 
                     }
                 }
