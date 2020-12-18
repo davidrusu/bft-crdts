@@ -42,7 +42,7 @@ impl PartialOrd for Actor {
 
 impl Ord for Actor {
     fn cmp(&self, other: &Self) -> Ordering {
-	self.0.as_bytes().cmp(&other.0.as_bytes())
+        self.0.as_bytes().cmp(&other.0.as_bytes())
     }
 }
 

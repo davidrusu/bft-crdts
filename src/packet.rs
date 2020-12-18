@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::actor::{Actor, Sig};
 use crate::bft_membership;
@@ -15,5 +15,5 @@ pub struct Packet<Op> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload<AlgoOp> {
     SecureBroadcast(deterministic_secure_broadcast::Op<AlgoOp>),
-    Membership(bft_membership::Vote)
+    Membership(bft_membership::Vote),
 }

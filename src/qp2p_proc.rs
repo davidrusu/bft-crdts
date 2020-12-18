@@ -12,12 +12,12 @@ use std::{
 
 pub mod actor;
 pub mod at2_impl;
-pub mod deterministic_secure_broadcast;
 pub mod bft_membership;
-pub mod packet;
+pub mod deterministic_secure_broadcast;
 pub mod net;
-pub mod traits;
 pub mod orswot;
+pub mod packet;
+pub mod traits;
 
 use actor::Actor;
 use deterministic_secure_broadcast as dsb;
@@ -280,8 +280,8 @@ impl Router {
                     }
                 }
             }
-	    RouterCmd::RequestMembership(actor_id) => {
-		let matching_actors: Vec<Actor> = self
+            RouterCmd::RequestMembership(actor_id) => {
+                let matching_actors: Vec<Actor> = self
                     .peers
                     .iter()
                     .map(|(actor, _)| actor)
@@ -300,11 +300,11 @@ impl Router {
                 } else {
                     let actor = matching_actors[0];
                     println!("Starting join for actor: {:?}", actor);
-		    for packet in self.state.request_membership(actor) {
-			self.deliver_packet(packet).await;
-		    }
+                    for packet in self.state.request_membership(actor) {
+                        self.deliver_packet(packet).await;
+                    }
                 }
-	    }
+            }
             RouterCmd::Trust(actor_id) => {
                 let matching_actors: Vec<Actor> = self
                     .peers
