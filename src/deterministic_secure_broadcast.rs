@@ -205,8 +205,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
                 let num_signatures = self.pending_proof[&msg].len();
 
-                assert!(num_signatures > 0);
-
                 // we don't want to re-broadcast a proof if we've already reached quorum
                 // hence we check that (num_sigs - 1) was not quorum
                 if self.quorum(num_signatures, msg.gen)? && !self.quorum(num_signatures - 1, msg.gen)?
