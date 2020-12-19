@@ -10,7 +10,6 @@ On top of the core we layer an implementation of [SecureBroadcast](https://dahli
 
 At the outer most layer, we have our network implementation, that is, the layer that actually does the the dirty work of interacting with the real world. Sending, receiving packets, ensuring reliable packet delivery, etc.
 
-
 ## Running the Test Nets
 
 We make use of [quickcheck](https://github.com/BurntSushi/quickcheck) for generating a large range of network behavior and ensuring that our correctness properties hold.
@@ -22,6 +21,18 @@ To run the test nets, run:
 
 QUICKCHECK_TESTS=1000 cargo test
 ```
+
+## Generating Message Sequence Charts
+
+Some tests will generate <test_name>.msc files after a run to help understand what is going on inside the network
+
+You can process these .msc files with [mscgen](http://www.mcternan.me.uk/mscgen/). Get yourself a copy of the binary, then run
+
+```
+mscgen -T png -i onboarding.msc -o out.png
+```
+
+Replace `onboarding.msc` with the test you'd like to study.
 
 ## Repository Structure
 
@@ -51,7 +62,6 @@ The network layer implemented in this repository is a simulated, in-memory netwo
 
 In a production deployment, the network layer would need to be adapted to real world network constraints and all the complexity that entails.
 
-
 ### Secure Broadcast
 
 Secure broadcast is similar in operation to a 2-phase-commit. It differs in that the underlying algorithm decides the level of parallelism. The only constraint directly imposed by secure broadcast is that operations produced by an actor is processed in the order that operations are created by the actor (source ordering). Below is a sequence diagram of the secure broadcast algorithm, process states as they evolve are on the left.
@@ -64,7 +74,7 @@ At the core, we have the algorithm we are performing this byzantine fault tolera
 
 The contract the algorithm must fulfill is given by this trait here:
 
-``` rust
+```rust
 pub trait SecureBroadcastAlgorithm: Clone + Debug + Eq {
     type Op: Debug + Clone + Hash + Eq + Serialize; // The set of ops this algorithm accepts
     type ReplicatedState: Clone + Debug + Eq;  // The snapshot state that is used to onboard new peers
@@ -90,6 +100,7 @@ pub trait SecureBroadcastAlgorithm: Clone + Debug + Eq {
 ![Onion Layers](./assets/onion_layers.png)
 
 ## References + Prior Art
+
 - [AT2: Asynchronous Trustworthy Transfers](https://arxiv.org/pdf/1812.10844.pdf)
 - [Secure Reliable Multicast Protocols in a WAN](https://dahliamalkhi.files.wordpress.com/2016/08/wansecure-multicast-icdcs97.pdf)
 - [Byzantine Fault Tolerance for Services with Commutative Operations](https://academic.csuohio.edu/zhao_w/papers/scc2014zhao.pdf)
