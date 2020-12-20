@@ -64,7 +64,7 @@ impl SharedDSB {
     }
 
     fn apply(&self, packet: Packet) -> Vec<Packet> {
-        self.dsb.lock().unwrap().apply(packet).unwrap()
+        self.dsb.lock().unwrap().handle_packet(packet).unwrap()
     }
 
     fn read(&self) -> HashSet<Value> {
