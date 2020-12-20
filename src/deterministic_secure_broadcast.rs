@@ -13,6 +13,23 @@ use serde::{Deserialize, Serialize};
 pub enum Error {
     Membership(bft_membership::Error),
     Encoding(bincode::Error),
+    Validation(Validation),
+}
+
+#[derive(Debug)]
+pub enum Validation {
+    PacketSourceIsNotDot { from: Actor, dot: Dot<Actor> },
+    MsgDotNotTheNextDot { msg_dot: Dot<Actor>, expected_dot: Dot<Actor> },
+    SourceAlreadyHasPendingMsg { msg_dot: Dot<Actor>, next_deliver_dot: Dot<Actor> },
+    MessageFromDifferentGeneration { msg_gen: Generation, gen: Generation },
+    SourceIsNotVotingMember { source: Actor, members: BTreeSet<Actor>},
+    AlgoValidationFailed,
+    InvalidSignature,
+    SignedValidatedForPacketWeDidNotRequest,
+    MsgDotNotNextDotToBeDelivered { msg_dot: Dot<Actor>, expected_dot: Dot<Actor> },
+    NotEnoughSignaturesToFormQuorum,
+    ProofContainsSignaturesFromNonMembers,
+    ProofContainsInvalidSignatures,
 }
 
 impl From<bincode::Error> for Error {
@@ -24,6 +41,12 @@ impl From<bincode::Error> for Error {
 impl From<bft_membership::Error> for Error {
     fn from(err: bft_membership::Error) -> Self {
         Self::Membership(err)
+    }
+}
+
+impl From<Validation> for Error {
+    fn from(err: Validation) -> Self {
+        Self::Validation(err)
     }
 }
 
@@ -46,9 +69,6 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     // The state of the algorithm that we are running BFT over.
     // This can be the causal bank described in AT2, or it can be a CRDT.
     pub algo: A,
-
-    // Track number of invalid packets received from an actor
-    pub invalid_packets: BTreeMap<Actor, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +118,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             pending_proof: Default::default(),
             delivered: Default::default(),
             received: Default::default(),
-            invalid_packets: Default::default(),
         }
     }
 
@@ -174,14 +193,8 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             self.actor()
         );
 
-        if self.validate_packet(&packet)? {
-            self.process_packet(packet)
-        } else {
-            println!("[DSB/INVALID] packet failed validation: {:?}", packet);
-            let count = self.invalid_packets.entry(packet.source).or_default();
-            *count += 1;
-            Ok(vec![])
-        }
+        self.validate_packet(&packet)?;
+        self.process_packet(packet)
     }
 
     fn process_packet(&mut self, packet: Packet<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
@@ -258,108 +271,69 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         }
     }
 
-    fn validate_packet(&self, packet: &Packet<A::Op>) -> Result<bool, Error> {
+    fn validate_packet(&self, packet: &Packet<A::Op>) -> Result<(), Error> {
         if !packet.source.verify(&packet.payload, &packet.sig)? {
             println!(
                 "[DSB/SIG] Msg failed signature verification {}->{}",
                 packet.source,
                 self.actor(),
             );
-            Ok(false)
-        } else if !self.validate_payload(packet.source, &packet.payload)? {
-            println!(
-                "[DSB/BFT] Msg failed validation {}->{}",
-                packet.source,
-                self.actor()
-            );
-            Ok(false)
+            Err(Error::Validation(Validation::InvalidSignature))
         } else {
-            Ok(true)
+	    self.validate_payload(packet.source, &packet.payload)
         }
     }
 
-    fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> Result<bool, Error> {
+    fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> Result<(), Error> {
         match payload {
             Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
-            Payload::Membership(_) => Ok(true), // membership votes are validated inside membership.handle_vote(..)
+            Payload::Membership(_) => Ok(()), // membership votes are validated inside membership.handle_vote(..)
         }
     }
 
-    fn validate_secure_broadcast_op(&self, from: Actor, op: &Op<A::Op>) -> Result<bool, Error> {
-        let validation_tests = match op {
-            Op::RequestValidation { msg } => vec![
-                (
-                    from == msg.dot.actor,
-                    "source does not match the msg dot".to_string(),
-                ),
-                (
-                    msg.dot == self.received.inc(from),
-                    "not the next msg".to_string(),
-                ),
-                (
-                    msg.dot == self.delivered.inc(from),
-                    "source already has a pending operation, we must wait for that one to complete."
-                        .to_string(),
-                ),
-		(
-		    msg.gen == self.membership.gen,
-		    "This message is from a different generation".to_string(),
-		),
-		(
-                    self.membership.members(self.membership.gen)?.contains(&from),
-                    "source is not a voting member of the network".to_string(),
-                ),
-                (self.algo.validate(&from, &msg.op), "failed algo validation".to_string())
-            ],
-            Op::SignedValidated { msg, sig } => vec![
-                (
-                    from.verify(&msg, sig)?,
-                    "failed sig verification".to_string(),
-                ),
-                (
-                    self.actor() == msg.dot.actor,
-                    "validation not requested".to_string(),
-                ),
-            ],
+    fn validate_secure_broadcast_op(&self, from: Actor, op: &Op<A::Op>) -> Result<(), Error> {
+        match op {
+            Op::RequestValidation { msg } => {
+		if from != msg.dot.actor {
+		    Err(Validation::PacketSourceIsNotDot { from, dot: msg.dot.clone() })
+		} else if msg.dot != self.received.inc(from) {
+		    Err(Validation::MsgDotNotTheNextDot { msg_dot: msg.dot, expected_dot: self.received.inc(from) })
+		} else if msg.dot != self.delivered.inc(from) {
+		    Err(Validation::SourceAlreadyHasPendingMsg { msg_dot: msg.dot, next_deliver_dot: self.delivered.inc(from) })
+		} else if msg.gen != self.membership.gen {
+		    Err(Validation::MessageFromDifferentGeneration { msg_gen: msg.gen, gen: self.membership.gen })
+		} else if !self.membership.members(self.membership.gen)?.contains(&from) {
+		    Err(Validation::SourceIsNotVotingMember { source: from, members: self.membership.members(self.membership.gen)? })
+		} else if !self.algo.validate(&from, &msg.op) {
+		    Err(Validation::AlgoValidationFailed)
+		} else {
+		    Ok(())
+		}
+	    },
+            Op::SignedValidated { msg, sig } => {
+		if !from.verify(&msg, sig)? {
+		    Err(Validation::InvalidSignature)
+		} else if self.actor() != msg.dot.actor {
+		    Err(Validation::SignedValidatedForPacketWeDidNotRequest)
+		} else {
+		    Ok(())
+		}
+            }
             Op::ProofOfAgreement { msg, proof } => {
                 let msg_members = self.membership.members(msg.gen)?;
-                vec![
-                    (
-                        self.delivered.inc(from) == msg.dot,
-                        format!(
-                            "either already delivered or out of order msg: {:?} != {:?}",
-                            self.delivered.inc(from),
-                            msg.dot
-                        ),
-                    ),
-                    (
-                        self.quorum(proof.len(), msg.gen)?,
-                        "not enough signatures for quorum".to_string(),
-                    ),
-                    (
-                        proof
-                            .iter()
-                            .all(|(signatory, _sig)| msg_members.contains(&signatory)),
-                        "proof contains signature(s) from unknown peer(s)".to_string(),
-                    ),
-                    (
-                        proof
-                            .iter()
-                            .map(|(signatory, sig)| signatory.verify(&msg, &sig))
-                            .collect::<Result<Vec<bool>, _>>()?
-                            .into_iter()
-                            .all(|v| v),
-                        "proof contains invalid signature(s)".to_string(),
-                    ),
-                ]
+		if self.delivered.inc(from) != msg.dot {
+		    Err(Validation::MsgDotNotNextDotToBeDelivered { msg_dot: msg.dot.clone(), expected_dot: self.delivered.inc(from) })
+		} else if !self.quorum(proof.len(), msg.gen)? {
+		    Err(Validation::NotEnoughSignaturesToFormQuorum)
+		} else if !proof.iter().all(|(signer, _)| msg_members.contains(&signer)) {
+		    Err(Validation::ProofContainsSignaturesFromNonMembers)
+		} else if !proof.iter().map(|(signer, sig)| signer.verify(&msg, &sig)).collect::<Result<Vec<bool>, _>>()?.into_iter().all(|v| v) {
+		    Err(Validation::ProofContainsInvalidSignatures)
+		} else {
+		    Ok(())
+		}
             }
-        };
-
-        Ok(validation_tests
-            .into_iter()
-            .find(|(is_valid, _msg)| !is_valid)
-            .map(|(_test, msg)| println!("[DSB/INVALID] {} {:?}", msg, op))
-            .is_none())
+        }.map_err(Error::Validation)
     }
 
     fn exec_op(&self, op: A::Op) -> Result<Vec<Packet<A::Op>>, Error> {
