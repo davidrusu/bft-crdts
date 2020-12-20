@@ -167,11 +167,6 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         f(&self.algo)
     }
 
-    pub fn apply(&mut self, packet: Packet<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
-        self.handle_packet(packet)
-        // TODO: replace handle_packet with apply
-    }
-
     pub fn handle_packet(&mut self, packet: Packet<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
         println!(
             "[DSB] handling packet from {}->{}",
@@ -286,13 +281,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> Result<bool, Error> {
         match payload {
             Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
-            Payload::Membership(vote) => match self.membership.validate_vote(vote) {
-                Ok(()) => Ok(true),
-                Err(e) => {
-                    println!("[DSB] Membership packet failed validation: {:?}", e);
-                    Ok(false)
-                }
-            },
+            Payload::Membership(_) => Ok(true), // membership votes are validated inside membership.handle_vote(..)
         }
     }
 
@@ -357,8 +346,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                         proof
                             .iter()
                             .map(|(signatory, sig)| signatory.verify(&msg, &sig))
-			    .collect::<Result<Vec<bool>, _>>()?
-			    .into_iter().all(|v| v),
+                            .collect::<Result<Vec<bool>, _>>()?
+                            .into_iter()
+                            .all(|v| v),
                         "proof contains invalid signature(s)".to_string(),
                     ),
                 ]

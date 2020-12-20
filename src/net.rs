@@ -114,7 +114,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
         self.delivered_packets.push(packet.clone());
-        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet).unwrap())
+        self.on_proc_mut(&packet.dest.clone(), |p| p.handle_packet(packet).unwrap_or_default())
             .unwrap_or_default()
     }
 
