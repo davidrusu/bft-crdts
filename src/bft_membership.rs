@@ -445,7 +445,7 @@ impl State {
         winning_reconfigs
     }
 
-    pub fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
+    fn validate_vote(&self, vote: &Vote) -> Result<(), Error> {
         let members = self.members(self.gen)?;
         if !vote.voter.verify((&vote.ballot, &vote.gen), &vote.sig)? {
             Err(Error::InvalidSignature)
