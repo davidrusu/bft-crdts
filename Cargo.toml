@@ -19,9 +19,9 @@ hex = "0.4.2"
 cmdr = { git = "https://github.com/mendelt/cmdr", rev = "8407462be39bb932ec86eea1b36ce325f3034ccb" }
 tokio = { version = "~0.2.22", features = ["full"] }
 qp2p = { git = "https://github.com/maidsafe/qp2p", rev = "10b7c25b55788cb4e1253e557cfe6d8d53d00cb0" }
+thiserror = "1.0"
 
 [profile.test]
-# Property testing is a power hungry beast, we need to go as fast as we can
 opt-level = 3
-lto = "fat" # noticed a very significant speed up from enabling lto, perf improvement of 1m33s -> 10s
+lto = "fat"
 incremental = false

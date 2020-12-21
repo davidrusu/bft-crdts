@@ -13,7 +13,7 @@ pub struct Net<A: SecureBroadcastAlgorithm> {
     pub procs: Vec<SecureBroadcastProc<A>>,
     pub delivered_packets: Vec<Packet<A::Op>>,
     pub n_packets: u64,
-    pub invalid_packets: HashMap<Actor, u64>
+    pub invalid_packets: HashMap<Actor, u64>,
 }
 
 impl<A: SecureBroadcastAlgorithm> Net<A> {
@@ -22,7 +22,7 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
             procs: Vec::new(),
             n_packets: 0,
             delivered_packets: Default::default(),
-	    invalid_packets: Default::default(),
+            invalid_packets: Default::default(),
         }
     }
 
@@ -115,16 +115,16 @@ impl<A: SecureBroadcastAlgorithm> Net<A> {
     pub fn deliver_packet(&mut self, packet: Packet<A::Op>) -> Vec<Packet<A::Op>> {
         println!("[NET] packet {}->{}", packet.source, packet.dest);
         self.n_packets += 1;
-	let dest = packet.dest.clone();
+        let dest = packet.dest.clone();
         self.delivered_packets.push(packet.clone());
         self.on_proc_mut(&dest, |p| p.handle_packet(packet))
-	    .unwrap_or_else(|| Ok(vec![])) // no proc to deliver too
-	    .unwrap_or_else(|err| {
-		println!("[DSB] Rejected packet: {:?}", err);
-		let count = self.invalid_packets.entry(dest).or_default();
-		*count += 1;
-		vec![]
-	    })
+            .unwrap_or_else(|| Ok(vec![])) // no proc to deliver too
+            .unwrap_or_else(|err| {
+                println!("[DSB] Rejected packet: {:?}", err);
+                let count = self.invalid_packets.entry(dest).or_default();
+                *count += 1;
+                vec![]
+            })
     }
 
     /// Checks if all members of the network have converged to the same state.
