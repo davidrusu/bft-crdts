@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crdts::VClock;
 
 use crate::actor::{Actor, Sig};
 use crate::bft_membership;
@@ -14,6 +15,10 @@ pub struct Packet<Op> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload<AlgoOp> {
+    AntiEntropy {
+	delivered: VClock<Actor>,
+	generation: bft_membership::Generation,
+    },
     SecureBroadcast(deterministic_secure_broadcast::Op<AlgoOp>),
     Membership(bft_membership::Vote),
 }

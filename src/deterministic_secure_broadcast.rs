@@ -79,6 +79,9 @@ pub struct SecureBroadcastProc<A: SecureBroadcastAlgorithm> {
     // The clock representing the most recent msgs we've delivered to the underlying algorithm `algo`.
     pub delivered: VClock<Actor>,
 
+    // For onboarding and anti-entropy, we track all operations we've applied from a given source
+    pub history_from_source: BTreeMap<Actor, Vec<(Msg<A::Op>, BTreeMap<Actor, Sig>)>>,
+
     // The state of the algorithm that we are running BFT over.
     // This can be the causal bank described in AT2, or it can be a CRDT.
     pub algo: A,
@@ -131,6 +134,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             pending_proof: Default::default(),
             delivered: Default::default(),
             received: Default::default(),
+            history_from_source: Default::default(),
         }
     }
 
@@ -156,6 +160,11 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         self.membership.trust(peer);
     }
 
+    pub fn untrust_peer(&mut self, peer: Actor) {
+        println!("[DSB] {:?} is trusting {:?}", self.actor(), peer);
+        self.membership.untrust(peer);
+    }
+
     pub fn request_membership(
         &mut self,
         actor: Actor,
@@ -171,16 +180,12 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
             .propose(bft_membership::Reconfig::Leave(actor))?)
     }
 
-    pub fn sync_from(&mut self, state: ReplicatedState<A>) {
-        // TODO: !! there is no validation this state right now.
-        // Suggestion. Periodic BFT agreement on the state snapshot, and procs store all ProofsOfAgreement msgs they've delivered since last snapshot.
-        // once the list of proofs becomes large enough, collapse these proofs into the next snapshot.
-        //
-        // During onboarding, ship the last snapshot together with it's proof of agreement and the subsequent list of proofs of agreement msgs.
-        println!("[DSB] {} syncing", self.actor());
-        self.delivered.merge(state.delivered.clone());
-        self.received.merge(state.delivered); // We advance received up to what we've delivered
-        self.algo.sync_from(state.algo_state);
+    pub fn anti_entropy(&mut self, peer: Actor) -> Result<Packet<A::Op>, Error> {
+        let payload = Payload::AntiEntropy {
+            generation: self.membership.gen,
+            delivered: self.delivered.clone(),
+        };
+        self.send(peer, payload)
     }
 
     pub fn exec_algo_op(
@@ -211,7 +216,38 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
     }
 
     fn process_packet(&mut self, packet: Packet<A::Op>) -> Result<Vec<Packet<A::Op>>, Error> {
+        let source = packet.source;
         match packet.payload {
+            Payload::AntiEntropy {
+                delivered,
+                generation,
+            } => {
+                let mut packets_to_send = self
+                    .membership
+                    .anti_entropy(generation, source)
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                for (actor, msgs) in self.history_from_source.iter() {
+                    let seen_counter = delivered.get(actor);
+                    packets_to_send.extend(
+                        msgs.iter()
+                            .filter(|(msg, _proof)| msg.dot.counter > seen_counter)
+                            .map(|(msg, proof)| {
+                                self.send(
+                                    source,
+                                    Payload::SecureBroadcast(Op::ProofOfAgreement {
+                                        msg: msg.clone(),
+                                        proof: proof.clone(),
+                                    }),
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
+
+                Ok(packets_to_send)
+            }
             Payload::SecureBroadcast(op) => self.process_secure_broadcast_op(packet.source, op),
             Payload::Membership(vote) => {
                 self.membership.handle_vote(vote).map_err(Error::Membership)
@@ -233,7 +269,9 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 // with the proof of agreement. Our signature will prevent tampering.
                 let sig = self.membership.id.sign(&msg)?;
                 let validation = Op::SignedValidated { msg, sig };
-                Ok(vec![self.send(source, validation)?])
+                Ok(vec![
+                    self.send(source, Payload::SecureBroadcast(validation))?
+                ])
             }
             Op::SignedValidated { msg, sig } => {
                 println!("[DSB] signed validated");
@@ -258,12 +296,15 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                     // e.g. this happens if we request to join the network.
                     let recipients = &self.membership.members(msg.gen).unwrap()
                         | &vec![self.actor()].into_iter().collect();
-                    self.broadcast(&Op::ProofOfAgreement { msg, proof }, recipients)
+                    self.broadcast(
+                        &Payload::SecureBroadcast(Op::ProofOfAgreement { msg, proof }),
+                        recipients,
+                    )
                 } else {
                     Ok(vec![])
                 }
             }
-            Op::ProofOfAgreement { msg, .. } => {
+            Op::ProofOfAgreement { msg, proof } => {
                 println!("[DSB] proof of agreement: {:?}", msg);
                 // We may not have been in the subset of members to validate this clock
                 // so we may not have had the chance to increment received. We must bring
@@ -273,6 +314,12 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
                 // from this source.
                 self.received.apply(msg.dot);
                 self.delivered.apply(msg.dot);
+
+                // Log this op in our history with proof
+                self.history_from_source
+                    .entry(source)
+                    .or_default()
+                    .push((msg.clone(), proof.clone()));
 
                 // Apply the op
                 self.algo.apply(msg.op);
@@ -299,6 +346,7 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn validate_payload(&self, from: Actor, payload: &Payload<A::Op>) -> Result<(), Error> {
         match payload {
+            Payload::AntiEntropy { .. } => Ok(()),
             Payload::SecureBroadcast(op) => self.validate_secure_broadcast_op(from, op),
             Payload::Membership(_) => Ok(()), // membership votes are validated inside membership.handle_vote(..)
         }
@@ -391,7 +439,10 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
         };
 
         println!("[DSB] {} initiating bft for msg {:?}", self.actor(), msg);
-        self.broadcast(&Op::RequestValidation { msg }, self.peers()?)
+        self.broadcast(
+            &Payload::SecureBroadcast(Op::RequestValidation { msg }),
+            self.peers()?,
+        )
     }
 
     fn quorum(&self, n: usize, gen: Generation) -> Result<bool, Error> {
@@ -400,19 +451,18 @@ impl<A: SecureBroadcastAlgorithm> SecureBroadcastProc<A> {
 
     fn broadcast(
         &self,
-        op: &Op<A::Op>,
+        payload: &Payload<A::Op>,
         targets: BTreeSet<Actor>,
     ) -> Result<Vec<Packet<A::Op>>, Error> {
         println!("[DSB] broadcasting {}->{:?}", self.actor(), targets);
 
         targets
             .into_iter()
-            .map(|dest_p| self.send(dest_p, op.clone()))
+            .map(|dest_p| self.send(dest_p, payload.clone()))
             .collect()
     }
 
-    fn send(&self, dest: Actor, op: Op<A::Op>) -> Result<Packet<A::Op>, Error> {
-        let payload = Payload::SecureBroadcast(op);
+    fn send(&self, dest: Actor, payload: Payload<A::Op>) -> Result<Packet<A::Op>, Error> {
         let sig = self.membership.id.sign(&payload)?;
         Ok(Packet {
             source: self.actor(),

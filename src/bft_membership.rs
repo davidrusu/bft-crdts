@@ -15,7 +15,7 @@ pub struct State {
     pub id: SigningActor,
     pub gen: Generation,
     pub pending_gen: Generation,
-    trusted_members: BTreeSet<Actor>,
+    pub forced_reconfigs: BTreeMap<Generation, BTreeSet<Reconfig>>,
     pub history: BTreeMap<Generation, Vote>, // for onboarding new procs, the vote proving super majority
     pub votes: BTreeMap<Actor, Vote>,
     pub faulty: bool,
@@ -33,6 +33,15 @@ impl std::fmt::Debug for Reconfig {
             Reconfig::Join(a) => write!(f, "J{:?}", a),
             Reconfig::Leave(a) => write!(f, "L{:?}", a),
         }
+    }
+}
+
+impl Reconfig {
+    fn apply(self, members: &mut BTreeSet<Actor>) {
+	match self {
+	    Reconfig::Join(p) => members.insert(p),
+	    Reconfig::Leave(p) => members.remove(&p),
+	};
     }
 }
 
@@ -117,6 +126,18 @@ impl Vote {
         }
     }
 
+    fn voters(&self) -> BTreeSet<Actor> {
+	let mut seen_voters: BTreeSet<_> = match &self.ballot {
+            Ballot::Propose(_) => Default::default(),
+            Ballot::Merge(votes) | Ballot::SuperMajority(votes) => {
+                votes.iter().flat_map(|v| v.voters()).collect()
+            }
+        };
+	seen_voters.insert(self.voter);
+
+	seen_voters
+    }
+
     fn supersedes(&self, vote: &Vote) -> bool {
         if self == vote {
             true
@@ -185,28 +206,59 @@ pub enum Error {
 
 impl State {
     pub fn trust(&mut self, actor: Actor) {
-        self.trusted_members.insert(actor);
+        let forced_reconfigs = self.forced_reconfigs
+	    .entry(self.gen)
+	    .or_default();
+
+	// remove any leave reconfigs for this actor
+	forced_reconfigs.remove(&Reconfig::Leave(actor));
+	forced_reconfigs.insert(Reconfig::Join(actor));
+    }
+
+    pub fn untrust(&mut self, actor: Actor) {
+        let forced_reconfigs = self.forced_reconfigs
+	    .entry(self.gen)
+	    .or_default();
+
+	// remove any leave reconfigs for this actor
+	forced_reconfigs.remove(&Reconfig::Join(actor));
+	forced_reconfigs.insert(Reconfig::Leave(actor));
     }
 
     pub fn members(&self, gen: Generation) -> Result<BTreeSet<Actor>, Error> {
-        let mut members = self.trusted_members.clone();
+	// founding members are those who have an accepted vote in our history
+	// without being an explicit member of the network.
+        let mut members = BTreeSet::new();
+
+	self.forced_reconfigs
+	    .get(&0) // forced reconfigs at generation 0
+	    .cloned()
+	    .unwrap_or_default()
+	    .into_iter()
+	    .for_each(|r| r.apply(&mut members));
+
         if gen == 0 {
             return Ok(members);
         }
 
         for (history_gen, vote) in self.history.iter() {
+	    self.forced_reconfigs
+		.get(history_gen)
+		.cloned()
+		.unwrap_or_default()
+		.into_iter()
+		.for_each(|r| r.apply(&mut members));
+
             let votes = match &vote.ballot {
                 Ballot::SuperMajority(votes) => votes,
                 _ => {
                     return Err(Error::InvalidVoteInHistory(vote.clone()));
                 }
             };
-            for reconfig in self.resolve_votes(votes) {
-                match reconfig {
-                    Reconfig::Join(m) => members.insert(m),
-                    Reconfig::Leave(m) => members.remove(&m),
-                };
-            }
+
+	    self.resolve_votes(votes)
+		.into_iter()
+		.for_each(|r| r.apply(&mut members));
 
             if history_gen == &gen {
                 return Ok(members);
@@ -219,6 +271,14 @@ impl State {
     pub fn propose<T: Serialize>(&mut self, reconfig: Reconfig) -> Result<Vec<Packet<T>>, Error> {
         let vote = self.build_vote(self.gen + 1, Ballot::Propose(reconfig))?;
         self.cast_vote(vote)
+    }
+
+    pub fn anti_entropy<T: Serialize>(&self, from_gen: Generation, actor: Actor) -> Vec<Result<Packet<T>, Error>> {
+	self.history
+            .iter() // history is a BTreeSet, .iter() is ordered by generation
+	    .filter(|(gen, _)| **gen > from_gen)
+            .map(|(_, membership_proof)| self.send(membership_proof.clone(), actor))
+            .collect()
     }
 
     pub fn handle_vote<T: Serialize>(&mut self, vote: Vote) -> Result<Vec<Packet<T>>, Error> {
@@ -263,14 +323,21 @@ impl State {
             self.gen = self.pending_gen;
 
             // store a proof of what the network decided in our history so that we can onboard future procs.
-            let ballot = Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify();
-            let vote = Vote {
-                voter: self.id.actor(),
-                sig: self.id.sign((&ballot, &self.gen))?,
-                gen: self.gen,
-                ballot,
-            };
-            self.history.insert(self.gen, vote.clone());
+
+            let sm_ballot = Ballot::SuperMajority(self.votes.values().cloned().collect()).simplify();
+
+	    let sm_vote = if we_were_a_member_during_this_generation {
+		Vote {
+                    voter: self.id.actor(),
+                    sig: self.id.sign((&sm_ballot, &self.gen))?,
+                    gen: self.gen,
+                    ballot: sm_ballot,
+		}
+	    } else {
+		assert!(vote.is_super_majority_ballot());
+		vote.clone()
+	    };
+	    self.history.insert(self.gen, sm_vote);
 
             // clear our pending votes
             self.votes = Default::default();
@@ -287,13 +354,7 @@ impl State {
 
                 return new_members
                     .into_iter()
-                    .flat_map(|p| {
-                        // deliver the history in order from gen=1 onwards
-                        self.history
-                            .iter() // history is a BTreeSet, .iter() is ordered by generation
-                            .map(|(_gen, membership_proof)| self.send(membership_proof.clone(), p))
-                            .collect::<Vec<Result<_, _>>>()
-                    })
+                    .flat_map(|p| self.anti_entropy(0, p))
                     .collect::<Result<Vec<_>, Error>>();
             } else {
                 return Ok(vec![]);
@@ -803,7 +864,7 @@ msc {\n
     #[test]
     fn test_reject_new_join_if_we_are_at_capacity() {
         let mut proc = State {
-            trusted_members: (0..7).map(|_| Actor::default()).collect(),
+            forced_reconfigs: vec![(0, (0..7).map(|_| Reconfig::Join(Actor::default())).collect())].into_iter().collect(),
             ..State::default()
         };
         proc.trust(proc.id.actor());
@@ -823,7 +884,7 @@ msc {\n
     #[test]
     fn test_reject_join_if_actor_is_already_a_member() {
         let mut proc = State {
-            trusted_members: (0..1).map(|_| Actor::default()).collect(),
+            forced_reconfigs: vec![(0, (0..1).map(|_| Reconfig::Join(Actor::default())).collect())].into_iter().collect(),
             ..State::default()
         };
         proc.trust(proc.id.actor());
@@ -838,9 +899,10 @@ msc {\n
     #[test]
     fn test_reject_leave_if_actor_is_not_a_member() {
         let mut proc = State {
-            trusted_members: (0..1).map(|_| Actor::default()).collect(),
+            forced_reconfigs: vec![(0, (0..1).map(|_| Reconfig::Join(Actor::default())).collect())].into_iter().collect(),
             ..State::default()
         };
+
         proc.trust(proc.id.actor());
 
         let leaving_actor = Actor::default();
@@ -863,9 +925,11 @@ msc {\n
         let packets = net.procs[0]
             .propose::<()>(Reconfig::Join(Actor::default()))
             .unwrap();
+
         let mut stale_packets = net.procs[1]
             .propose::<()>(Reconfig::Join(Actor::default()))
             .unwrap();
+
         net.procs[1].pending_gen = 0;
         net.procs[1].votes = Default::default();
 
