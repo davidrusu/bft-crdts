@@ -11,14 +11,14 @@ path = "src/qp2p_proc.rs"
 
 [dependencies]
 crdts = "4.0.0"
-ed25519 = { version = "1.0.0", package = "ed25519-dalek", features = ["serde"] }
-rand = "0.7.3"
+ed25519 = { version = "2.0.0", package = "ed25519-dalek", features = ["serde", "rand_core"] }
+rand = "0.8"
 serde = "1.0.106"
 bincode = "1.2.1"
 hex = "0.4.2"
 cmdr = { git = "https://github.com/mendelt/cmdr", rev = "8407462be39bb932ec86eea1b36ce325f3034ccb" }
-tokio = { version = "~0.2.22", features = ["full"] }
-qp2p = { git = "https://github.com/maidsafe/qp2p", rev = "10b7c25b55788cb4e1253e557cfe6d8d53d00cb0" }
+tokio = { version = "1.18.5", features = ["full"] }
+qp2p = "0.12"
 thiserror = "1.0"
 
 [profile.test]

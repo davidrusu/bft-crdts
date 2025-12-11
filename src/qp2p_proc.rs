@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use cmdr::*;
 
-use qp2p::{self, Config, Endpoint, QuicP2p};
+use qp2p::{self, Config, Endpoint, IncomingMessages, QuicP2p};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -212,11 +212,11 @@ enum NetworkMsg {
 }
 
 impl Router {
-    fn new(state: SharedDSB) -> (Self, Endpoint) {
+    async fn new(state: SharedDSB) -> (Self, Endpoint, IncomingMessages) {
         let qp2p = QuicP2p::with_config(
             Some(Config {
-                port: Some(0),
-                ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                local_port: Some(0),
+                local_ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
                 ..Default::default()
             }),
             Default::default(),
@@ -224,10 +224,9 @@ impl Router {
         )
         .expect("Error creating QuicP2p object");
 
-        let endpoint = qp2p.new_endpoint().expect("Failed to create endpoint");
-        let addr = endpoint
-            .our_addr()
-            .expect("Failed to read our addr from endpoint");
+        let (endpoint, _incoming_conns, incoming_msgs, _disconnections) =
+            qp2p.new_endpoint().await.expect("Failed to create endpoint");
+        let addr = endpoint.socket_addr();
 
         let router = Self {
             state,
@@ -236,11 +235,12 @@ impl Router {
             peers: Default::default(),
         };
 
-        (router, endpoint)
+        (router, endpoint, incoming_msgs)
     }
 
-    fn new_endpoint(&self) -> Endpoint {
-        self.qp2p.new_endpoint().expect("Failed to create endpoint")
+    async fn new_endpoint(&self) -> Endpoint {
+        let (endpoint, _, _, _) = self.qp2p.new_endpoint().await.expect("Failed to create endpoint");
+        endpoint
     }
 
     async fn listen_for_cmds(mut self, mut net_rx: mpsc::Receiver<RouterCmd>) {
@@ -256,9 +256,7 @@ impl Router {
                 packet.dest, addr
             );
             let msg = bincode::serialize(&NetworkMsg::Packet(packet)).unwrap();
-            let conn = peer.connect_to(&addr).await.unwrap();
-            let _ = conn.send_uni(msg.clone().into()).await.unwrap();
-            conn.close()
+            peer.send_message(msg.into(), addr).await.unwrap();
         } else {
             println!(
                 "[P2P] we don't have a peer matching the destination for packet {:?}",
@@ -329,27 +327,23 @@ impl Router {
                 }
             }
             RouterCmd::SayHello(addr) => {
-                let peer = self.new_endpoint();
-                let conn = peer.connect_to(&addr).await.unwrap();
+                let peer = self.new_endpoint().await;
                 // self.peers.insert(actor, (peer, addr));
                 let msg =
                     bincode::serialize(&NetworkMsg::HelloMyNameIs(self.state.actor(), self.addr))
                         .unwrap();
-                let _ = conn.send_uni(msg.into()).await.unwrap();
-                conn.close();
+                peer.send_message(msg.into(), &addr).await.unwrap();
             }
             RouterCmd::AddPeer(actor, addr) => {
                 if !self.peers.contains_key(&actor) {
-                    let peer = self.new_endpoint();
-                    let conn = peer.connect_to(&addr).await.unwrap();
-                    self.peers.insert(actor, (peer, addr));
+                    let peer = self.new_endpoint().await;
+                    self.peers.insert(actor, (peer.clone(), addr));
                     let msg = bincode::serialize(&NetworkMsg::HelloMyNameIs(
                         self.state.actor(),
                         self.addr,
                     ))
                     .unwrap();
-                    let _ = conn.send_uni(msg.into()).await.unwrap();
-                    conn.close();
+                    peer.send_message(msg.into(), &addr).await.unwrap();
                 }
             }
             RouterCmd::Deliver(packet) => {
@@ -364,43 +358,40 @@ impl Router {
     }
 }
 
-async fn listen_for_network_msgs(endpoint: Endpoint, mut router_tx: mpsc::Sender<RouterCmd>) {
-    println!("[P2P] listening on {:?}", endpoint.our_addr());
+async fn listen_for_network_msgs(
+    endpoint: Endpoint,
+    mut incoming_msgs: IncomingMessages,
+    router_tx: mpsc::Sender<RouterCmd>,
+) {
+    let addr = endpoint.socket_addr();
+    println!("[P2P] listening on {:?}", addr);
 
     router_tx
-        .send(RouterCmd::SayHello(endpoint.our_addr().unwrap()))
+        .send(RouterCmd::SayHello(addr))
         .await
         .expect("Failed to send command to add self as peer");
 
-    match endpoint.listen() {
-        Ok(mut conns) => {
-            while let Some(mut msgs) = conns.next().await {
-                while let Some(msg) = msgs.next().await {
-                    let net_msg: NetworkMsg =
-                        bincode::deserialize(&msg.get_message_data()).unwrap();
-                    let cmd = match net_msg {
-                        NetworkMsg::HelloMyNameIs(actor, addr) => RouterCmd::AddPeer(actor, addr),
-                        NetworkMsg::Packet(packet) => RouterCmd::Apply(packet),
-                    };
+    while let Some((_src, msg)) = incoming_msgs.next().await {
+        let net_msg: NetworkMsg = bincode::deserialize(&msg).unwrap();
+        let cmd = match net_msg {
+            NetworkMsg::HelloMyNameIs(actor, addr) => RouterCmd::AddPeer(actor, addr),
+            NetworkMsg::Packet(packet) => RouterCmd::Apply(packet),
+        };
 
-                    router_tx
-                        .send(cmd)
-                        .await
-                        .expect("Failed to send router command");
-                }
-            }
-        }
-        Err(e) => println!("[P2P/ERROR] failed to start listening: {:?}", e),
+        router_tx
+            .send(cmd)
+            .await
+            .expect("Failed to send router command");
     }
 }
 
 #[tokio::main]
 async fn main() {
     let state = SharedDSB::new();
-    let (router, endpoint) = Router::new(state.clone());
+    let (router, endpoint, incoming_msgs) = Router::new(state.clone()).await;
     let (router_tx, router_rx) = mpsc::channel(100);
 
-    tokio::spawn(listen_for_network_msgs(endpoint, router_tx.clone()));
+    tokio::spawn(listen_for_network_msgs(endpoint, incoming_msgs, router_tx.clone()));
     tokio::spawn(router.listen_for_cmds(router_rx));
     cmd_loop(&mut Repl::new(state, router_tx)).expect("Failure in REPL");
 }

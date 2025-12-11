@@ -2,12 +2,12 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use ed25519::{Keypair, PublicKey, Signature, Signer, Verifier};
+use ed25519::{Signature, SigningKey, VerifyingKey, Signer, Verifier};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
 #[derive(Eq, Clone, Copy, Serialize, Deserialize)]
-pub struct Actor(pub PublicKey);
+pub struct Actor(pub VerifyingKey);
 
 impl Actor {
     pub fn verify(&self, blob: impl Serialize, sig: &Sig) -> Result<bool, bincode::Error> {
@@ -59,17 +59,17 @@ impl fmt::Debug for Actor {
     }
 }
 
-pub struct SigningActor(pub Keypair);
+pub struct SigningActor(pub SigningKey);
 
 impl Default for SigningActor {
     fn default() -> Self {
-        Self(Keypair::generate(&mut OsRng))
+        Self(SigningKey::generate(&mut OsRng))
     }
 }
 
 impl SigningActor {
     pub fn actor(&self) -> Actor {
-        Actor(self.0.public)
+        Actor(self.0.verifying_key())
     }
 
     pub fn sign(&self, blob: impl Serialize) -> Result<Sig, bincode::Error> {
